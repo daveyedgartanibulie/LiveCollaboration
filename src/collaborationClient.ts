@@ -23,19 +23,43 @@ export class CollaborationClient {
   }
 
   private applyRemoteChange(data: any) {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) return;
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || this.isApplyingRemoteChange) return;
 
-    this.isApplyingRemoteChange = true;
-    editor.edit(editBuilder => {
-      const range = new vscode.Range(
-        data.startLine, data.startChar,
-        data.endLine, data.endChar
-      );
-      editBuilder.replace(range, data.text);
-    }).then(() => {
-      this.isApplyingRemoteChange = false;
-    });
+      this.isApplyingRemoteChange = true;
+      
+      editor.edit(editBuilder => {
+          // Iterate through the array of changes sent by the server
+          data.changes.forEach((change: any) => {
+              const range = new vscode.Range(
+                  change.startLine, change.startChar,
+                  change.endLine, change.endChar
+              );
+              editBuilder.replace(range, change.text);
+          });
+      }).then(() => {
+          this.isApplyingRemoteChange = false;
+      });
+  }
+
+  private remoteCursorDecoration = vscode.window.createTextEditorDecorationType({
+    borderWidth: '1px',
+    borderStyle: 'solid',
+    overviewRulerColor: 'blue',
+    overviewRulerLane: vscode.OverviewRulerLane.Right,
+    light: { borderColor: 'darkblue' },
+    dark: { borderColor: 'lightblue' }
+  });
+
+  private showRemoteCursor(data: any) {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) return;
+
+      const pos = new vscode.Position(data.line, data.character);
+      const range = new vscode.Range(pos, pos);
+
+      // Apply the decoration to the editor
+      editor.setDecorations(this.remoteCursorDecoration, [range]);
   }
 
   setupDocumentSync() {

@@ -4,25 +4,24 @@ import { Server } from 'socket.io';
 import { v4 as uuidv4 } from 'uuid';
 
 const app = express();
-  app.get('/', (req, res) => {
-  res.send(`
-    <html>
-      <body style="font-family: sans-serif; padding: 40px; background: #1e1e1e; color: #fff;">
-        <h1>🚀 Collab Server</h1>
-        <p>✅ Server berjalan di port 3000</p>
-        <p>📡 WebSocket siap menerima koneksi</p>
-        <p>🏠 Rooms aktif: <strong id="rooms">...</strong></p>
-      </body>
-    </html>
-  `);
-});
 const httpServer = createServer(app);
 const io = new Server(httpServer, { cors: { origin: '*' } });
 
 const rooms = new Map();
+const userInfo = new Map(); // ✅ Simpan username tiap user
 
-// Simpan cursor tiap user
-const userCursors = new Map();
+app.get('/', (req, res) => {
+  res.send(`
+    <html>
+      <body style="font-family:sans-serif;padding:40px;background:#1e1e1e;color:#fff;">
+        <h1>🚀 Collab Server</h1>
+        <p>✅ Server berjalan di port 3000</p>
+        <p>🏠 Rooms aktif: ${rooms.size}</p>
+        <p>👥 Users online: ${userInfo.size}</p>
+      </body>
+    </html>
+  `);
+});
 
 io.on('connection', (socket) => {
   console.log('✅ User connected:', socket.id);
@@ -36,7 +35,8 @@ io.on('connection', (socket) => {
     console.log(`🏠 Room dibuat: ${roomId}`);
   });
 
-  socket.on('join-room', (roomId) => {
+  // ✅ Terima username saat join
+  socket.on('join-room', ({ roomId, username }) => {
     if (!rooms.has(roomId)) {
       socket.emit('error', 'Room tidak ditemukan');
       return;
@@ -44,50 +44,47 @@ io.on('connection', (socket) => {
 
     socket.join(roomId);
     socket.roomId = roomId;
+    socket.username = username;
+
+    // Simpan info user
+    userInfo.set(socket.id, { username, roomId });
     rooms.get(roomId).users.push(socket.id);
 
-    // Kirim semua cursor yang ada ke user baru
-    const existingCursors = [];
-    userCursors.forEach((cursor, userId) => {
-      if (userId !== socket.id) {
-        existingCursors.push({ userId, ...cursor });
-      }
-    });
-    socket.emit('existing-cursors', existingCursors);
     socket.emit('init-document', rooms.get(roomId).content);
-    socket.to(roomId).emit('user-joined', { userId: socket.id });
 
-    console.log(`👤 User ${socket.id} join room: ${roomId}`);
-  });
+    // Beritahu user lain dengan username
+    socket.to(roomId).emit('user-joined', { userId: socket.id, username });
 
-  // ✅ Handler cursor update
-  socket.on('cursor-update', (data) => {
-    // Simpan cursor terbaru user ini
-    userCursors.set(socket.id, {
-      line: data.line,
-      character: data.character,
-      username: data.username,
-      fileName: data.fileName,
-    });
-
-    // Broadcast ke user lain di room yang sama
-    socket.to(socket.roomId).emit('cursor-update', {
-      userId: socket.id,
-      ...data,
-    });
+    console.log(`👤 ${username} join room: ${roomId}`);
   });
 
   socket.on('text-change', (data) => {
+    // Simpan konten terbaru
+    if (socket.roomId && rooms.has(socket.roomId)) {
+      rooms.get(socket.roomId).content = data.fullContent || '';
+    }
     socket.to(socket.roomId).emit('text-change', data);
   });
 
+  socket.on('cursor-update', (data) => {
+    socket.to(socket.roomId).emit('cursor-update', {
+      ...data,
+      userId: socket.id,
+      username: socket.username || 'Unknown',
+    });
+  });
+
   socket.on('disconnect', () => {
-    console.log('❌ User disconnected:', socket.id);
-    userCursors.delete(socket.id); // Hapus cursor dari map
+    const info = userInfo.get(socket.id);
+    console.log(`❌ ${info?.username || socket.id} disconnected`);
 
     if (socket.roomId) {
-      socket.to(socket.roomId).emit('user-left', { userId: socket.id });
+      socket.to(socket.roomId).emit('user-left', {
+        userId: socket.id,
+        username: info?.username || 'User'
+      });
     }
+    userInfo.delete(socket.id);
   });
 });
 
