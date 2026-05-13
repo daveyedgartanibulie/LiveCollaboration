@@ -10,36 +10,43 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
-    "commands": [
-      {
-        "command": "collab.setUser",
-        "title": "Set User ID & Name"
-      },
-      {
-        "command": "collab.myProfile",
-        "title": "My Collab Profile"
-      },
-      {
-        "command": "collab.resetUser",
-        "title": "Reset User ID"
-      },
-      {
-        "command": "collab.startSession",
-        "title": "Start Collab Session"
-      },
-      {
-        "command": "collab.joinSession",
-        "title": "Join Collab Session"
-      },
-      {
-        "command": "collab.stopSession",
-        "title": "Stop Collab Session"
-      }
-    ]
+  "commands": [
+    {
+      "command": "collab.setUser",
+      "title": "Set User ID & Name"
+    },
+    {
+      "command": "collab.myProfile",
+      "title": "My Collab Profile"
+    },
+    {
+      "command": "collab.resetUser",
+      "title": "Reset User ID"
+    },
+    {
+      "command": "collab.startSession",
+      "title": "Start Collab Session"
+    },
+    {
+      "command": "collab.joinSession",
+      "title": "Join Collab Session"
+    },
+    {
+      "command": "collab.stopSession",
+      "title": "Stop Collab Session"
+    }
+  ]
   },
+  "activationEvents": [
+    "onCommand:collab.setUser",
+    "onCommand:collab.myProfile",
+    "onCommand:collab.resetUser",
+    "onCommand:collab.startSession",
+    "onCommand:collab.joinSession",
+    "onCommand:collab.stopSession"
+  ],
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
