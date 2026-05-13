@@ -5,25 +5,84 @@ const { io } = require('socket.io-client');
 let socket: any = null;
 let isApplyingRemoteChange = false;
 let docSyncDisposable: vscode.Disposable | null = null;
-let myUsername = 'User'; // ✅ Simpan username global
+let myUsername = '';
+let myUserId = '';
 
 export function activate(context: vscode.ExtensionContext) {
 
-  // ✅ Start Session (jadi host)
+  // ✅ Set User ID & Username
   context.subscriptions.push(
-    vscode.commands.registerCommand('live-collaboration.startSession', async () => {
+    vscode.commands.registerCommand('collab.setUser', async () => {
 
-      // Input username dulu
+      const userId = await vscode.window.showInputBox({
+        prompt: '🪪 Masukkan ID kamu (bebas, unik)',
+        placeHolder: 'Contoh: budi123, sari_dev, john99',
+        validateInput: (val) => {
+          if (val.trim() === '') return 'ID tidak boleh kosong!';
+          if (val.includes(' ')) return 'ID tidak boleh mengandung spasi!';
+          if (val.length < 3) return 'ID minimal 3 karakter!';
+          return null;
+        }
+      });
+      if (!userId) return;
+
       const username = await vscode.window.showInputBox({
-        prompt: 'Masukkan nama kamu',
+        prompt: '👤 Masukkan nama tampilan kamu',
         placeHolder: 'Contoh: Budi, Sari, John...',
         validateInput: (val) => val.trim() === '' ? 'Nama tidak boleh kosong!' : null
       });
       if (!username) return;
+
+      myUserId = userId.trim();
       myUsername = username.trim();
 
+      // Simpan ke VS Code storage supaya tidak perlu input ulang
+      context.globalState.update('collab.userId', myUserId);
+      context.globalState.update('collab.username', myUsername);
+
+      vscode.window.showInformationMessage(
+        `✅ ID: ${myUserId} | Nama: ${myUsername} tersimpan!`
+      );
+    })
+  );
+
+  // ✅ Start Session (jadi host)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('collab.startSession', async () => {
+
+      // Load dari storage kalau sudah pernah set
+      myUserId = context.globalState.get('collab.userId', '');
+      myUsername = context.globalState.get('collab.username', '');
+
+      // Kalau belum set, minta input dulu
+      if (!myUserId || !myUsername) {
+        const userId = await vscode.window.showInputBox({
+          prompt: '🪪 Masukkan ID kamu',
+          placeHolder: 'Contoh: budi123',
+          validateInput: (val) => {
+            if (val.trim() === '') return 'ID tidak boleh kosong!';
+            if (val.includes(' ')) return 'ID tidak boleh mengandung spasi!';
+            if (val.length < 3) return 'ID minimal 3 karakter!';
+            return null;
+          }
+        });
+        if (!userId) return;
+
+        const username = await vscode.window.showInputBox({
+          prompt: '👤 Masukkan nama tampilan kamu',
+          placeHolder: 'Contoh: Budi, Sari...',
+          validateInput: (val) => val.trim() === '' ? 'Nama tidak boleh kosong!' : null
+        });
+        if (!username) return;
+
+        myUserId = userId.trim();
+        myUsername = username.trim();
+        context.globalState.update('collab.userId', myUserId);
+        context.globalState.update('collab.username', myUsername);
+      }
+
       const serverUrl = await vscode.window.showInputBox({
-        prompt: 'URL Server',
+        prompt: '🌐 URL Server',
         value: 'http://localhost:3000',
       });
       if (!serverUrl) return;
@@ -31,17 +90,24 @@ export function activate(context: vscode.ExtensionContext) {
       socket = io(serverUrl);
 
       socket.on('connect', () => {
-        socket.emit('create-room', (roomId: string) => {
-          vscode.window.showInformationMessage(
-            `✅ Halo ${myUsername}! Session ID: ${roomId}`,
-            'Copy ID'
-          ).then(action => {
-            if (action === 'Copy ID') {
-              vscode.env.clipboard.writeText(roomId);
-              vscode.window.showInformationMessage('📋 ID berhasil dicopy!');
-            }
-          });
-        });
+        socket.emit('create-room', { userId: myUserId, username: myUsername },
+          (roomId: string) => {
+            showRoomId(roomId);
+            vscode.window.showInformationMessage(
+              `🚀 Halo ${myUsername} (${myUserId})! Session ID: ${roomId}`,
+              'Copy ID'
+            ).then(action => {
+              if (action === 'Copy ID') {
+                vscode.env.clipboard.writeText(roomId);
+                vscode.window.showInformationMessage('📋 ID berhasil dicopy!');
+              }
+            });
+          }
+        );
+      });
+
+      socket.on('room-created', (roomId: string) => {
+        showRoomId(roomId);
       });
 
       socket.on('text-change', (data: any) => {
@@ -49,11 +115,15 @@ export function activate(context: vscode.ExtensionContext) {
       });
 
       socket.on('user-joined', (data: any) => {
-        vscode.window.showInformationMessage(`👤 ${data.username || 'User'} bergabung!`);
+        vscode.window.showInformationMessage(
+          `👤 ${data.username} (${data.userId}) bergabung!`
+        );
       });
 
       socket.on('user-left', (data: any) => {
-        vscode.window.showInformationMessage(`👋 ${data.username || 'User'} keluar.`);
+        vscode.window.showInformationMessage(
+          `👋 ${data.username} (${data.userId}) keluar.`
+        );
       });
 
       setupDocumentSync();
@@ -62,66 +132,144 @@ export function activate(context: vscode.ExtensionContext) {
 
   // ✅ Join Session (jadi member)
   context.subscriptions.push(
-    vscode.commands.registerCommand('live-collaboration.joinSession', async () => {
+  vscode.commands.registerCommand('collab.joinSession', async () => {
 
-      // Input username dulu
+    // Load user dari storage
+    myUserId = context.globalState.get('collab.userId', '');
+    myUsername = context.globalState.get('collab.username', '');
+
+    // Kalau belum set, minta input
+    if (!myUserId || !myUsername) {
+      const userId = await vscode.window.showInputBox({
+        prompt: '🪪 Masukkan ID kamu',
+        placeHolder: 'Contoh: budi123',
+        validateInput: (val) => {
+          if (val.trim() === '') return 'ID tidak boleh kosong!';
+          if (val.includes(' ')) return 'ID tidak boleh mengandung spasi!';
+          if (val.length < 3) return 'ID minimal 3 karakter!';
+          return null;
+        }
+      });
+      if (!userId) return;
+
       const username = await vscode.window.showInputBox({
-        prompt: 'Masukkan nama kamu',
-        placeHolder: 'Contoh: Budi, Sari, John...',
+        prompt: '👤 Masukkan nama tampilan kamu',
+        placeHolder: 'Contoh: Budi, Sari...',
         validateInput: (val) => val.trim() === '' ? 'Nama tidak boleh kosong!' : null
       });
       if (!username) return;
+
+      myUserId = userId.trim();
       myUsername = username.trim();
+      context.globalState.update('collab.userId', myUserId);
+      context.globalState.update('collab.username', myUsername);
+    }
 
-      // Input Session ID
-      const roomId = await vscode.window.showInputBox({
-        prompt: 'Masukkan Session ID dari teman kamu',
-        placeHolder: 'Contoh: AB12CD34',
-        validateInput: (val) => val.trim() === '' ? 'Session ID tidak boleh kosong!' : null
+    // ✅ Input URL server (bisa ganti ke IP teman)
+    const serverUrl = await vscode.window.showInputBox({
+      prompt: '🌐 URL Server (localhost atau IP teman)',
+      value: context.globalState.get('collab.serverUrl', 'http://localhost:3000'),
+      placeHolder: 'http://192.168.1.5:3000'
+    });
+    if (!serverUrl) return;
+
+    // Simpan URL server untuk next time
+    context.globalState.update('collab.serverUrl', serverUrl);
+
+    // ✅ Input Session ID
+    const roomId = await vscode.window.showInputBox({
+      prompt: '🔑 Masukkan Session ID dari teman kamu',
+      placeHolder: 'Contoh: AB12CD34',
+      validateInput: (val) => val.trim() === '' ? 'Session ID tidak boleh kosong!' : null
+    });
+    if (!roomId) return;
+
+    socket = io(serverUrl);
+
+    socket.on('connect', () => {
+      socket.emit('join-room', {
+        roomId: roomId.toUpperCase(),
+        userId: myUserId,
+        username: myUsername
       });
-      if (!roomId) return;
+      vscode.window.showInformationMessage(
+        `✅ Halo ${myUsername} (${myUserId})! Berhasil join: ${roomId}`
+      );
+    });
 
-      socket = io('http://localhost:3000');
+    socket.on('connect_error', (err: any) => {
+      vscode.window.showErrorMessage(
+        `❌ Gagal konek ke server: ${serverUrl} — ${err.message}`
+      );
+    });
 
-      socket.on('connect', () => {
-        // Kirim username saat join
-        socket.emit('join-room', { roomId: roomId.toUpperCase(), username: myUsername });
-        vscode.window.showInformationMessage(`✅ Halo ${myUsername}! Berhasil join room: ${roomId}`);
-      });
+    socket.on('init-document', (content: string) => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || !content) return;
 
-      socket.on('init-document', (content: string) => {
-        const editor = vscode.window.activeTextEditor;
-        if (!editor || !content) return;
+      isApplyingRemoteChange = true;
+      editor.edit(editBuilder => {
+        const fullRange = new vscode.Range(
+          editor.document.positionAt(0),
+          editor.document.positionAt(editor.document.getText().length)
+        );
+        editBuilder.replace(fullRange, content);
+      }).then(() => { isApplyingRemoteChange = false; });
+    });
 
-        isApplyingRemoteChange = true;
-        editor.edit(editBuilder => {
-          const fullRange = new vscode.Range(
-            editor.document.positionAt(0),
-            editor.document.positionAt(editor.document.getText().length)
-          );
-          editBuilder.replace(fullRange, content);
-        }).then(() => { isApplyingRemoteChange = false; });
-      });
+    socket.on('text-change', (data: any) => {
+      applyRemoteChange(data);
+    });
 
-      socket.on('text-change', (data: any) => {
-        applyRemoteChange(data);
-      });
+    socket.on('user-joined', (data: any) => {
+      vscode.window.showInformationMessage(
+        `👤 ${data.username} (${data.userId}) bergabung!`
+      );
+    });
 
-      socket.on('user-joined', (data: any) => {
-        vscode.window.showInformationMessage(`👤 ${data.username || 'User'} bergabung!`);
-      });
+    socket.on('user-left', (data: any) => {
+      vscode.window.showInformationMessage(
+        `👋 ${data.username} (${data.userId}) keluar.`
+      );
+    });
 
-      socket.on('user-left', (data: any) => {
-        vscode.window.showInformationMessage(`👋 ${data.username || 'User'} keluar.`);
-      });
+    socket.on('error', (msg: string) => {
+      vscode.window.showErrorMessage(`❌ Error: ${msg}`);
+    });
 
-      setupDocumentSync();
+    setupDocumentSync();
+  }));
+
+  // ✅ Lihat ID saya sekarang
+  context.subscriptions.push(
+    vscode.commands.registerCommand('collab.myProfile', () => {
+      const savedId = context.globalState.get('collab.userId', '');
+      const savedName = context.globalState.get('collab.username', '');
+
+      if (!savedId) {
+        vscode.window.showInformationMessage('❌ Belum set ID. Jalankan "Set User ID"');
+        return;
+      }
+      vscode.window.showInformationMessage(
+        `🪪 ID: ${savedId} | 👤 Nama: ${savedName}`
+      );
+    })
+  );
+
+  // ✅ Reset ID
+  context.subscriptions.push(
+    vscode.commands.registerCommand('collab.resetUser', async () => {
+      await context.globalState.update('collab.userId', '');
+      await context.globalState.update('collab.username', '');
+      myUserId = '';
+      myUsername = '';
+      vscode.window.showInformationMessage('🔄 ID dan nama berhasil direset!');
     })
   );
 
   // ✅ Stop Session
   context.subscriptions.push(
-    vscode.commands.registerCommand('live-collaboration.stopSession', () => {
+    vscode.commands.registerCommand('collab.stopSession', () => {
       if (socket) {
         socket.disconnect();
         socket = null;
@@ -136,9 +284,7 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 function setupDocumentSync() {
-  if (docSyncDisposable) {
-    docSyncDisposable.dispose();
-  }
+  if (docSyncDisposable) docSyncDisposable.dispose();
 
   docSyncDisposable = vscode.workspace.onDidChangeTextDocument((event) => {
     if (isApplyingRemoteChange) return;
@@ -153,12 +299,16 @@ function setupDocumentSync() {
     }));
 
     if (changes.length > 0) {
-      socket.emit('text-change', { changes, username: myUsername });
+      socket.emit('text-change', {
+        changes,
+        userId: myUserId,
+        username: myUsername
+      });
     }
   });
 }
 
-function applyRemoteChange(data: { changes: any[], username?: string }) {
+function applyRemoteChange(data: { changes: any[] }) {
   const editor = vscode.window.activeTextEditor;
   if (!editor) return;
 
@@ -172,6 +322,18 @@ function applyRemoteChange(data: { changes: any[], username?: string }) {
       editBuilder.replace(range, change.text);
     });
   }).then(() => { isApplyingRemoteChange = false; });
+}
+
+function showRoomId(roomId: string) {
+  vscode.window.showInformationMessage(
+    `🚀 Halo ${myUsername} (${myUserId})! Session ID: ${roomId}`,
+    'Copy ID'
+  ).then(action => {
+    if (action === 'Copy ID') {
+      vscode.env.clipboard.writeText(roomId);
+      vscode.window.showInformationMessage('📋 ID berhasil dicopy!');
+    }
+  });
 }
 
 export function deactivate() {

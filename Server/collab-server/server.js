@@ -8,7 +8,7 @@ const httpServer = createServer(app);
 const io = new Server(httpServer, { cors: { origin: '*' } });
 
 const rooms = new Map();
-const userInfo = new Map(); // ✅ Simpan username tiap user
+const userInfo = new Map();
 
 app.get('/', (req, res) => {
   res.send(`
@@ -26,17 +26,41 @@ app.get('/', (req, res) => {
 io.on('connection', (socket) => {
   console.log('✅ User connected:', socket.id);
 
-  socket.on('create-room', (callback) => {
+  // ✅ Fix: terima data object DAN callback terpisah
+  socket.on('create-room', (data, callback) => {
+
+    // Handle jika data adalah function (cara lama tanpa userId)
+    if (typeof data === 'function') {
+      callback = data;
+      data = {};
+    }
+
     const roomId = uuidv4().substring(0, 8).toUpperCase();
     rooms.set(roomId, { users: [socket.id], content: '' });
     socket.join(roomId);
     socket.roomId = roomId;
-    callback(roomId);
-    console.log(`🏠 Room dibuat: ${roomId}`);
+    socket.userId = data.userId || socket.id;
+    socket.username = data.username || 'Unknown';
+
+    // Simpan info user
+    userInfo.set(socket.id, {
+      userId: socket.userId,
+      username: socket.username,
+      roomId
+    });
+
+    console.log(`🏠 Room dibuat: ${roomId} oleh ${socket.username} (${socket.userId}`);
+
+    // Pastikan callback adalah function sebelum dipanggil
+    if (typeof callback === 'function') {
+      callback(roomId);
+    } else {
+      // Kirim balik roomId lewat event kalau tidak ada callback
+      socket.emit('room-created', roomId);
+    }
   });
 
-  // ✅ Terima username saat join
-  socket.on('join-room', ({ roomId, username }) => {
+  socket.on('join-room', ({ roomId, userId, username }) => {
     if (!rooms.has(roomId)) {
       socket.emit('error', 'Room tidak ditemukan');
       return;
@@ -44,22 +68,19 @@ io.on('connection', (socket) => {
 
     socket.join(roomId);
     socket.roomId = roomId;
+    socket.userId = userId;
     socket.username = username;
 
-    // Simpan info user
-    userInfo.set(socket.id, { username, roomId });
+    userInfo.set(socket.id, { userId, username, roomId });
     rooms.get(roomId).users.push(socket.id);
 
     socket.emit('init-document', rooms.get(roomId).content);
+    socket.to(roomId).emit('user-joined', { userId, username });
 
-    // Beritahu user lain dengan username
-    socket.to(roomId).emit('user-joined', { userId: socket.id, username });
-
-    console.log(`👤 ${username} join room: ${roomId}`);
+    console.log(`👤 ${username} (${userId}) join room: ${roomId}`);
   });
 
   socket.on('text-change', (data) => {
-    // Simpan konten terbaru
     if (socket.roomId && rooms.has(socket.roomId)) {
       rooms.get(socket.roomId).content = data.fullContent || '';
     }
@@ -69,8 +90,8 @@ io.on('connection', (socket) => {
   socket.on('cursor-update', (data) => {
     socket.to(socket.roomId).emit('cursor-update', {
       ...data,
-      userId: socket.id,
-      username: socket.username || 'Unknown',
+      userId: socket.userId,
+      username: socket.username,
     });
   });
 
@@ -80,7 +101,7 @@ io.on('connection', (socket) => {
 
     if (socket.roomId) {
       socket.to(socket.roomId).emit('user-left', {
-        userId: socket.id,
+        userId: info?.userId || socket.id,
         username: info?.username || 'User'
       });
     }

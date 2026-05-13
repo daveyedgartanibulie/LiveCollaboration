@@ -1,4 +1,5 @@
 {
+  "publisher": "sitewhiz",
   "name": "live-collaboration",
   "displayName": "Live Collaboration",
   "description": "",
@@ -14,8 +15,28 @@
   "contributes": {
     "commands": [
       {
-        "command": "live-collaboration.startSession",
+        "command": "collab.setUser",
+        "title": "Set User ID & Name"
+      },
+      {
+        "command": "collab.myProfile",
+        "title": "My Collab Profile"
+      },
+      {
+        "command": "collab.resetUser",
+        "title": "Reset User ID"
+      },
+      {
+        "command": "collab.startSession",
         "title": "Start Collab Session"
+      },
+      {
+        "command": "collab.joinSession",
+        "title": "Join Collab Session"
+      },
+      {
+        "command": "collab.stopSession",
+        "title": "Stop Collab Session"
       }
     ]
   },
