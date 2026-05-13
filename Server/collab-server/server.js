@@ -1,7 +1,7 @@
-const express = require('express');
-const { createServer } = require('http');
-const { Server } = require('socket.io');
-const { v4: uuidv4 } = require('uuid');
+import express from 'express';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
+import { v4 as uuidv4 } from 'uuid';
 
 const app = express();
 const httpServer = createServer(app);
@@ -31,13 +31,11 @@ io.on('connection', (socket) => {
     socket.roomId = roomId;
     rooms.get(roomId).users.push(socket.id);
 
-    // Kirim konten dokumen saat ini ke user baru
     socket.emit('init-document', rooms.get(roomId).content);
     socket.to(roomId).emit('user-joined', { userId: socket.id });
   });
 
   socket.on('text-change', (data) => {
-    // Broadcast ke semua user lain di room yang sama
     socket.to(socket.roomId).emit('text-change', data);
   });
 
