@@ -1,26 +1,38 @@
-// The module 'vscode' contains the VS Code extensibility API
-// Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
+import { CollaborationClient } from './collaborationClient';
 
-// This method is called when your extension is activated
-// Your extension is activated the very first time the command is executed
+let client: CollaborationClient;
+
 export function activate(context: vscode.ExtensionContext) {
+  // Command: Start Session
+  context.subscriptions.push(
+    vscode.commands.registerCommand('collab.startSession', async () => {
+      const serverUrl = await vscode.window.showInputBox({
+        prompt: 'Masukkan URL server',
+        value: 'http://localhost:3000'
+      });
+      if (!serverUrl) return;
 
-	// Use the console to output diagnostic information (console.log) and errors (console.error)
-	// This line of code will only be executed once when your extension is activated
-	console.log('Congratulations, your extension "live-collaboration" is now active!');
+      client = new CollaborationClient(serverUrl);
+      const roomId = await client.createRoom();
+      vscode.window.showInformationMessage(`Session ID: ${roomId}`);
+    })
+  );
 
-	// The command has been defined in the package.json file
-	// Now provide the implementation of the command with registerCommand
-	// The commandId parameter must match the command field in package.json
-	const disposable = vscode.commands.registerCommand('live-collaboration.helloWorld', () => {
-		// The code you place here will be executed every time your command is executed
-		// Display a message box to the user
-		vscode.window.showInformationMessage('Hello World from Live Collaboration!');
-	});
+  // Command: Join Session
+  context.subscriptions.push(
+    vscode.commands.registerCommand('collab.joinSession', async () => {
+      const roomId = await vscode.window.showInputBox({
+        prompt: 'Masukkan Session ID'
+      });
+      if (!roomId) return;
 
-	context.subscriptions.push(disposable);
+      client = new CollaborationClient('http://localhost:3000');
+      await client.joinRoom(roomId);
+    })
+  );
 }
 
-// This method is called when your extension is deactivated
-export function deactivate() {}
+export function deactivate() {
+  client?.disconnect();
+}
