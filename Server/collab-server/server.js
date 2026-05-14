@@ -137,7 +137,7 @@ io.on('connection', (socket) => {
     });
 
     socket.to(roomId).emit('user-reconnected', { userId, username });
-    console.log(🔄 ${username} reconnected ke room: ${roomId});
+    console.log(`🔄 ${username} reconnected ke room: ${roomId}`);
   });
 
   socket.on('text-change', (data) => {
