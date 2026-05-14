@@ -69,8 +69,10 @@ export function activate(context: vscode.ExtensionContext) {
       // Koneksikan socket
       connectSocket(serverUrl);
 
-      socket.on('connect', () => {
-        socket.emit('create-room',
+      const emitCreate = () => {
+        if (!socket) return;
+        socket.emit(
+          'create-room',
           { userId: myUserId, username: myUsername },
           (roomId: string) => {
             currentRoomId = roomId;
@@ -87,7 +89,12 @@ export function activate(context: vscode.ExtensionContext) {
             });
           }
         );
-      });
+      };
+      if (socket.connected) {
+        emitCreate();
+      } else {
+        socket.once('connect', emitCreate);
+      }
 
       // Terima perubahan dari user lain
       socket.on('text-change', (data: any) => {
@@ -147,22 +154,28 @@ export function activate(context: vscode.ExtensionContext) {
         validateInput: (val) => val.trim() === '' ? 'Session ID tidak boleh kosong!' : null
       });
       if (!roomId) return;
-      currentRoomId = roomId.toUpperCase();
+      currentRoomId = roomId.trim().toUpperCase().replace(/-/g, '');
 
       // Koneksikan socket
       connectSocket(serverUrl);
 
-      socket.on('connect', () => {
+      const emitJoin = () => {
+        if (!socket || !currentRoomId) return;
         socket.emit('join-room', {
           roomId: currentRoomId,
           userId: myUserId,
           username: myUsername,
         });
-
         vscode.window.showInformationMessage(
           `✅ Halo ${myUsername}! Bergabung ke room: ${currentRoomId}`
         );
-      });
+      };
+      // Jangan hanya .on('connect'): kalau sudah connected, event bisa terlewat → server tidak pernah dapat join-room
+      if (socket.connected) {
+        emitJoin();
+      } else {
+        socket.once('connect', emitJoin);
+      }
 
       // Terima dokumen awal dari host
       socket.on('init-document', (content: string) => {

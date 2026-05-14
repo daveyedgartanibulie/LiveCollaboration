@@ -84,8 +84,9 @@ export class CollaborationClient {
     });
   }
 
-  async joinRoom(roomId: string) {
-    this.socket.emit('join-room', roomId);
+  async joinRoom(roomId: string, userId: string, username: string) {
+    const id = String(roomId).trim().toUpperCase().replace(/-/g, '');
+    this.socket.emit('join-room', { roomId: id, userId, username });
     this.setupDocumentSync();
   }
 

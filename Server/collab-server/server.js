@@ -2,31 +2,36 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import { v4 as uuidv4 } from 'uuid';
-import os from 'os';
 
 const app = express();
-const httpServer = createServer(app);
 
-// ✅ Tambah reconnect settings
+// ✅ Fix ngrok header
+app.use((req, res, next) => {
+  res.setHeader('ngrok-skip-browser-warning', 'true');
+  next();
+});
+
+const httpServer = createServer(app);
 const io = new Server(httpServer, {
-  cors: { origin: '*' },
+  cors: {
+    origin: '*',          // ✅ Izinkan semua origin
+    methods: ['GET', 'POST'],
+    credentials: true
+  },
   pingTimeout: 60000,
   pingInterval: 25000,
-  connectTimeout: 45000,
-  transports: ['websocket', 'polling'], // fallback ke polling kalau websocket gagal
+  transports: ['websocket', 'polling'],
 });
 
 const rooms = new Map();
 const userInfo = new Map();
-const terminals = new Map();
-const debugSessions = new Map();
 
 app.get('/', (req, res) => {
   res.send(`
     <html>
       <body style="font-family:sans-serif;padding:40px;background:#1e1e1e;color:#fff;">
         <h1>🚀 Collab Server</h1>
-        <p>✅ Server berjalan di port 3000</p>
+        <p>✅ Server berjalan</p>
         <p>🏠 Rooms aktif: ${rooms.size}</p>
         <p>👥 Users online: ${userInfo.size}</p>
       </body>
@@ -36,30 +41,6 @@ app.get('/', (req, res) => {
 
 io.on('connection', (socket) => {
   console.log('✅ User connected:', socket.id);
-
-  // ✅ Handle reconnect — restore state user
-  socket.on('reconnect-room', ({ roomId, userId, username }) => {
-    if (!rooms.has(roomId)) {
-      socket.emit('error', 'Room tidak ditemukan atau sudah expired');
-      return;
-    }
-
-    socket.join(roomId);
-    socket.roomId = roomId;
-    socket.userId = userId;
-    socket.username = username;
-
-    userInfo.set(socket.id, { userId, username, roomId });
-
-    // Kirim state terakhir ke user yang reconnect
-    socket.emit('reconnected', {
-      content: rooms.get(roomId).content,
-      debugSession: debugSessions.get(roomId) || null,
-    });
-
-    socket.to(roomId).emit('user-reconnected', { userId, username });
-    console.log(`🔄 ${username} reconnected ke room: ${roomId}`);
-  });
 
   socket.on('create-room', (data, callback) => {
     if (typeof data === 'function') { callback = data; data = {}; }
@@ -76,6 +57,8 @@ io.on('connection', (socket) => {
       username: socket.username,
       roomId
     });
+
+    console.log(`🏠 Room dibuat: ${roomId} oleh ${socket.username}`);
 
     if (typeof callback === 'function') callback(roomId);
     else socket.emit('room-created', roomId);
@@ -95,49 +78,18 @@ io.on('connection', (socket) => {
     userInfo.set(socket.id, { userId, username, roomId });
     rooms.get(roomId).users.push(socket.id);
 
+    // Kirim konten dokumen ke guest
     socket.emit('init-document', rooms.get(roomId).content);
     socket.to(roomId).emit('user-joined', { userId, username });
 
-    if (debugSessions.has(roomId)) {
-      socket.emit('debug-session-started', debugSessions.get(roomId));
-    }
-
-    if (terminals.has(roomId)) {
-      socket.emit('terminal-available');
-    }
+    console.log(`👤 ${username} (${userId}) join room: ${roomId}`);
   });
-  
-  // ✅ Host kirim full document ke guest baru
+
   socket.on('sync-document', (data) => {
     if (socket.roomId && rooms.has(socket.roomId)) {
-      // Update konten room
       rooms.get(socket.roomId).content = data.content;
-      // Kirim ke semua guest
       socket.to(socket.roomId).emit('init-document', data.content);
     }
-  });
-
-  // ✅ Handle reconnect
-  socket.on('reconnect-room', ({ roomId, userId, username }) => {
-    if (!rooms.has(roomId)) {
-      socket.emit('error', 'Room tidak ditemukan');
-      return;
-    }
-
-    socket.join(roomId);
-    socket.roomId = roomId;
-    socket.userId = userId;
-    socket.username = username;
-
-    userInfo.set(socket.id, { userId, username, roomId });
-
-    // Kirim state terakhir
-    socket.emit('reconnected', {
-      content: rooms.get(roomId).content,
-    });
-
-    socket.to(roomId).emit('user-reconnected', { userId, username });
-    console.log(`🔄 ${username} reconnected ke room: ${roomId}`);
   });
 
   socket.on('text-change', (data) => {
@@ -155,103 +107,25 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('debug-started', (data) => {
-    const roomId = socket.roomId;
-    if (!roomId) return;
+  socket.on('reconnect-room', ({ roomId, userId, username }) => {
+    if (!rooms.has(roomId)) {
+      socket.emit('error', 'Room tidak ditemukan');
+      return;
+    }
 
-    debugSessions.set(roomId, {
-      sessionId: data.sessionId,
-      language: data.language,
-      fileName: data.fileName,
-      breakpoints: data.breakpoints || [],
-      startedBy: socket.username,
-      isPaused: false,
+    socket.join(roomId);
+    socket.roomId = roomId;
+    socket.userId = userId;
+    socket.username = username;
+
+    userInfo.set(socket.id, { userId, username, roomId });
+
+    socket.emit('reconnected', {
+      content: rooms.get(roomId).content,
     });
 
-    socket.to(roomId).emit('debug-session-started', debugSessions.get(roomId));
-  });
-
-  socket.on('debug-stopped', () => {
-    debugSessions.delete(socket.roomId);
-    socket.to(socket.roomId).emit('debug-session-stopped');
-  });
-
-  socket.on('debug-paused', (data) => {
-    const session = debugSessions.get(socket.roomId);
-    if (session) {
-      session.isPaused = true;
-      session.currentLine = data.currentLine;
-      session.variables = data.variables;
-      session.callStack = data.callStack;
-    }
-    socket.to(socket.roomId).emit('debug-paused', data);
-  });
-
-  socket.on('debug-resumed', () => {
-    const session = debugSessions.get(socket.roomId);
-    if (session) session.isPaused = false;
-    socket.to(socket.roomId).emit('debug-resumed');
-  });
-
-  socket.on('debug-breakpoints-updated', (data) => {
-    const session = debugSessions.get(socket.roomId);
-    if (session) session.breakpoints = data.breakpoints;
-    socket.to(socket.roomId).emit('debug-breakpoints-updated', data);
-  });
-
-  socket.on('debug-step-request', (data) => {
-    socket.to(socket.roomId).emit('debug-step-request', {
-      type: data.type,
-      requestedBy: socket.username,
-    });
-  });
-
-  socket.on('start-terminal', () => {
-    const roomId = socket.roomId;
-    if (!roomId) return;
-
-    try {
-      const pty = require('node-pty');
-      const shell = os.platform() === 'win32' ? 'powershell.exe' : 'bash';
-      const ptyProcess = pty.spawn(shell, [], {
-        name: 'xterm-color',
-        cols: 80,
-        rows: 24,
-        cwd: process.env.HOME,
-        env: process.env
-      });
-
-      terminals.set(roomId, ptyProcess);
-      ptyProcess.onData((data) => io.to(roomId).emit('terminal-output', data));
-      ptyProcess.onExit(() => {
-        terminals.delete(roomId);
-        io.to(roomId).emit('terminal-closed');
-      });
-
-      io.to(roomId).emit('terminal-available');
-    } catch (err) {
-      console.error('Terminal error:', err);
-      socket.emit('error', 'Gagal membuat terminal');
-    }
-  });
-
-  socket.on('terminal-input', (data) => {
-    const ptyProcess = terminals.get(socket.roomId);
-    if (ptyProcess) ptyProcess.write(data);
-  });
-
-  socket.on('terminal-resize', ({ cols, rows }) => {
-    const ptyProcess = terminals.get(socket.roomId);
-    if (ptyProcess) ptyProcess.resize(cols, rows);
-  });
-
-  socket.on('stop-terminal', () => {
-    const ptyProcess = terminals.get(socket.roomId);
-    if (ptyProcess) {
-      ptyProcess.kill();
-      terminals.delete(socket.roomId);
-      io.to(socket.roomId).emit('terminal-closed');
-    }
+    socket.to(roomId).emit('user-reconnected', { userId, username });
+    console.log(`🔄 ${username} reconnected ke room: ${roomId}`);
   });
 
   socket.on('disconnect', (reason) => {
@@ -265,13 +139,15 @@ io.on('connection', (socket) => {
       });
     }
 
-    // ✅ Jangan hapus room saat disconnect
-    // Beri waktu 30 detik untuk reconnect
+    // Hapus room setelah 30 detik kalau kosong
     setTimeout(() => {
-      if (!io.sockets.adapter.rooms.has(socket.roomId)) {
-        rooms.delete(socket.roomId);
-        debugSessions.delete(socket.roomId);
-        console.log(`🗑️ Room ${socket.roomId} dihapus karena kosong`);
+      if (socket.roomId && rooms.has(socket.roomId)) {
+        const room = rooms.get(socket.roomId);
+        room.users = room.users.filter((id) => id !== socket.id);
+        if (room.users.length === 0) {
+          rooms.delete(socket.roomId);
+          console.log(`🗑️ Room ${socket.roomId} dihapus`);
+        }
       }
     }, 30000);
 
