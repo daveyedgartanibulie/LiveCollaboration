@@ -61,7 +61,9 @@ io.on('connection', (socket) => {
       userId: socket.userId,
       username: socket.username,
       roomId,
-      status: 'idle'
+      status: 'idle',
+      activeFile: null,
+      activeLine: 0
     });
 
     console.log(`🏠 Room dibuat: ${roomId} oleh ${socket.username}`);
@@ -102,7 +104,7 @@ io.on('connection', (socket) => {
     socket.userId = userId;
     socket.username = username;
 
-    userInfo.set(socket.id, { userId, username, roomId, status: 'idle' });
+    userInfo.set(socket.id, { userId, username, roomId, status: 'idle', activeFile: null, activeLine: 0 });
     rooms.get(roomId).users.push(socket.id);
 
     // Kirim daftar member yang sudah ada di room ke user baru
@@ -113,6 +115,8 @@ io.on('connection', (socket) => {
           userId: info.userId,
           username: info.username,
           status: info.status || 'idle',
+          activeFile: info.activeFile || null,
+          activeLine: info.activeLine || 0,
         });
       }
     }
@@ -199,6 +203,25 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Track file aktif yang sedang dibuka user
+  socket.on('active-file', (data) => {
+    const info = userInfo.get(socket.id);
+    if (info) {
+      info.activeFile = data.relativePath || null;
+      info.activeLine = data.line || 0;
+    }
+    // Relay ke semua user lain di room
+    if (socket.roomId) {
+      socket.to(socket.roomId).emit('active-file', {
+        userId: socket.userId,
+        username: socket.username,
+        relativePath: data.relativePath,
+        line: data.line || 0,
+        character: data.character || 0,
+      });
+    }
+  });
+
   // Relay single file overwrite ke room
   socket.on('sync-file', (data) => {
     if (socket.roomId) {
@@ -234,7 +257,7 @@ io.on('connection', (socket) => {
     socket.userId = userId;
     socket.username = username;
 
-    userInfo.set(socket.id, { userId, username, roomId });
+    userInfo.set(socket.id, { userId, username, roomId, status: 'idle', activeFile: null, activeLine: 0 });
 
     socket.emit('reconnected', {
       files: rooms.get(roomId).files,

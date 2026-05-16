@@ -12,6 +12,25 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "collabPanel",
+          "title": "Live Collaboration",
+          "icon": "$(organization)"
+        }
+      ]
+    },
+    "views": {
+      "collabPanel": [
+        {
+          "id": "collabUsers",
+          "name": "Collaborators",
+          "icon": "$(people)",
+          "contextualTitle": "Live Collaboration"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "collab.setUser",
@@ -44,8 +63,36 @@
       {
         "command": "collab.syncProject",
         "title": "Sync Project to Collaborators"
+      },
+      {
+        "command": "collab.showActiveUsers",
+        "title": "Show Active Users"
+      },
+      {
+        "command": "collab.followUser",
+        "title": "Follow User",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "collab.openUserFile",
+        "title": "Open User's File",
+        "icon": "$(go-to-file)"
       }
-    ]
+    ],
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "collab.followUser",
+          "when": "view == collabUsers && viewItem == remoteUser",
+          "group": "inline"
+        },
+        {
+          "command": "collab.openUserFile",
+          "when": "view == collabUsers && viewItem == userFile",
+          "group": "inline"
+        }
+      ]
+    }
   },
   "activationEvents": [
     "onCommand:collab.setUser",
@@ -55,7 +102,9 @@
     "onCommand:collab.joinSession",
     "onCommand:collab.stopSession",
     "onCommand:collab.syncFile",
-    "onCommand:collab.syncProject"
+    "onCommand:collab.syncProject",
+    "onCommand:collab.showActiveUsers",
+    "onView:collabUsers"
   ],
   "scripts": {
     "vscode:prepublish": "npm run compile",
@@ -77,7 +126,6 @@
     "typescript-eslint": "^8.56.1"
   },
   "dependencies": {
-    "@ngrok/ngrok": "^1.7.0",
     "socket.io-client": "^4.8.3"
   }
 }
