@@ -51,7 +51,13 @@ io.on('connection', (socket) => {
     if (typeof data === 'function') { callback = data; data = {}; }
 
     const roomId = uuidv4().substring(0, 8).toUpperCase();
-    rooms.set(roomId, { users: [socket.id], files: {} });
+    rooms.set(roomId, {
+      users: [socket.id],
+      files: {},
+      hostSocketId: socket.id,
+      hostUserId: data.userId || socket.id,
+      hostUsername: data.username || 'Unknown',
+    });
     socket.join(roomId);
     socket.roomId = roomId;
     socket.userId = data.userId || socket.id;
@@ -99,13 +105,30 @@ io.on('connection', (socket) => {
       return;
     }
 
+    const room = rooms.get(roomId);
+
     socket.join(roomId);
     socket.roomId = roomId;
     socket.userId = userId;
     socket.username = username;
 
     userInfo.set(socket.id, { userId, username, roomId, status: 'idle', activeFile: null, activeLine: 0 });
-    rooms.get(roomId).users.push(socket.id);
+    room.users.push(socket.id);
+
+    // ✅ Cek apakah ini HOST yang reconnect (userId sama dengan hostUserId)
+    if (room.hostUserId === userId) {
+      console.log(`✅ Host ${username} reconnected via join-room`);
+      // Update hostSocketId ke socket baru
+      room.hostSocketId = socket.id;
+      // Cancel timer penutupan room kalau ada
+      if (room.hostDisconnectTimer) {
+        clearTimeout(room.hostDisconnectTimer);
+        room.hostDisconnectTimer = null;
+        console.log(`✅ Timer penutupan room ${roomId} dibatalkan — host kembali`);
+      }
+      // Beritahu semua guest bahwa host kembali
+      socket.to(roomId).emit('host-reconnected', { userId, username });
+    }
 
     // Kirim daftar member yang sudah ada di room ke user baru
     const members = [];
@@ -122,8 +145,7 @@ io.on('connection', (socket) => {
     }
     socket.emit('room-members', members);
 
-    // Kirim semua file yang tersimpan ke guest
-    const room = rooms.get(roomId);
+    // Kirim semua file yang tersimpan ke joiner
     const fileKeys = Object.keys(room.files);
     console.log(`📂 Mengirim ${fileKeys.length} file tersimpan ke ${username}...`);
     if (fileKeys.length > 0) {
@@ -252,6 +274,8 @@ io.on('connection', (socket) => {
       return;
     }
 
+    const room = rooms.get(roomId);
+
     socket.join(roomId);
     socket.roomId = roomId;
     socket.userId = userId;
@@ -259,8 +283,27 @@ io.on('connection', (socket) => {
 
     userInfo.set(socket.id, { userId, username, roomId, status: 'idle', activeFile: null, activeLine: 0 });
 
+    // Cek apakah ini host yang reconnect
+    if (room.hostUserId === userId) {
+      // Host reconnect — cancel timer penutupan room
+      if (room.hostDisconnectTimer) {
+        clearTimeout(room.hostDisconnectTimer);
+        room.hostDisconnectTimer = null;
+        console.log(`✅ Host ${username} reconnected — timer penutupan room dibatalkan`);
+      }
+      // Update hostSocketId ke socket baru
+      room.hostSocketId = socket.id;
+      room.users.push(socket.id);
+
+      // Beritahu semua guest bahwa host kembali
+      socket.to(roomId).emit('host-reconnected', { userId, username });
+    } else {
+      // Guest reconnect
+      room.users.push(socket.id);
+    }
+
     socket.emit('reconnected', {
-      files: rooms.get(roomId).files,
+      files: room.files,
     });
 
     socket.to(roomId).emit('user-reconnected', { userId, username });
@@ -271,24 +314,50 @@ io.on('connection', (socket) => {
     const info = userInfo.get(socket.id);
     console.log(`❌ ${info?.username || socket.id} disconnected: ${reason}`);
 
-    if (socket.roomId) {
-      socket.to(socket.roomId).emit('user-left', {
-        userId: info?.userId || socket.id,
-        username: info?.username || 'User'
-      });
-    }
+    if (socket.roomId && rooms.has(socket.roomId)) {
+      const room = rooms.get(socket.roomId);
 
-    // Hapus room setelah 30 detik kalau kosong
-    setTimeout(() => {
-      if (socket.roomId && rooms.has(socket.roomId)) {
-        const room = rooms.get(socket.roomId);
-        room.users = room.users.filter((id) => id !== socket.id);
-        if (room.users.length === 0) {
-          rooms.delete(socket.roomId);
-          console.log(`🗑️ Room ${socket.roomId} dihapus`);
-        }
+      // Hapus socket dari daftar user room
+      room.users = room.users.filter((id) => id !== socket.id);
+
+      // Cek apakah yang disconnect adalah HOST
+      if (room.hostSocketId === socket.id) {
+        // HOST disconnect → beri grace period 30 detik untuk reconnect
+        console.log(`⏳ Host ${info?.username} disconnect — menunggu 30 detik sebelum menutup room ${socket.roomId}`);
+
+        // Beritahu semua guest bahwa host sementara disconnect
+        socket.to(socket.roomId).emit('host-disconnected', {
+          username: info?.username || 'Unknown',
+          message: `Host (${info?.username}) terputus. Menunggu reconnect... (30 detik)`,
+        });
+
+        const roomIdToClose = socket.roomId;
+
+        // Set timer: kalau host tidak reconnect dalam 30 detik, tutup room
+        room.hostDisconnectTimer = setTimeout(() => {
+          if (rooms.has(roomIdToClose)) {
+            const r = rooms.get(roomIdToClose);
+            console.log(`🔒 Host ${info?.username} tidak reconnect — menutup room ${roomIdToClose}`);
+
+            // Emit room-closed ke semua user yang masih di room
+            io.to(roomIdToClose).emit('room-closed', {
+              reason: `Host (${info?.username || 'Unknown'}) telah meninggalkan room dan tidak kembali. Session ditutup.`,
+              hostUsername: info?.username || 'Unknown',
+            });
+
+            rooms.delete(roomIdToClose);
+            console.log(`🗑️ Room ${roomIdToClose} dihapus (host timeout)`);
+          }
+        }, 30000);
+      } else {
+        // GUEST disconnect → kirim user-left
+        socket.to(socket.roomId).emit('user-left', {
+          userId: info?.userId || socket.id,
+          username: info?.username || 'User'
+        });
+        console.log(`👋 Guest ${info?.username} keluar dari room ${socket.roomId}`);
       }
-    }, 30000);
+    }
 
     userInfo.delete(socket.id);
   });

@@ -4,6 +4,8 @@ const { io } = require('socket.io-client');
 let socket: any = null;
 let isApplyingRemoteChange = false;
 let docSyncDisposable: vscode.Disposable | null = null;
+let fileCreateWatcherDisposable: vscode.Disposable | null = null;
+let fileSaveWatcherDisposable: vscode.Disposable | null = null;
 let myUsername = '';
 let myUserId = '';
 let currentRoomId = '';
@@ -137,6 +139,17 @@ export function activate(context: vscode.ExtensionContext) {
   // ✅ Start Session
   context.subscriptions.push(
     vscode.commands.registerCommand('collab.startSession', async () => {
+      // Guard: cek apakah sudah ada session aktif
+      if (socket && socket.connected && currentRoomId) {
+        const action = await vscode.window.showWarningMessage(
+          `⚠️ Kamu sudah terhubung ke room ${currentRoomId}. Hentikan session dulu sebelum memulai yang baru.`,
+          'Stop Session', 'Batal'
+        );
+        if (action === 'Stop Session') {
+          await vscode.commands.executeCommand('collab.stopSession');
+        }
+        return;
+      }
       // Cek workspace folder dulu
       if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
         const action = await vscode.window.showWarningMessage(
@@ -218,6 +231,7 @@ export function activate(context: vscode.ExtensionContext) {
       socket.off('presence-update');
       socket.off('cursor-update');
       socket.off('active-file');
+      socket.off('room-closed');
 
       // Terima perubahan dari user lain
       socket.on('text-change', (data: any) => {
@@ -378,6 +392,17 @@ export function activate(context: vscode.ExtensionContext) {
   // ✅ Join Session
   context.subscriptions.push(
     vscode.commands.registerCommand('collab.joinSession', async () => {
+      // Guard: cek apakah sudah ada session aktif
+      if (socket && socket.connected && currentRoomId) {
+        const action = await vscode.window.showWarningMessage(
+          `⚠️ Kamu sudah terhubung ke room ${currentRoomId}. Hentikan session dulu sebelum join yang baru.`,
+          'Stop Session', 'Batal'
+        );
+        if (action === 'Stop Session') {
+          await vscode.commands.executeCommand('collab.stopSession');
+        }
+        return;
+      }
 
       // Cek workspace folder dulu
       if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
@@ -441,6 +466,9 @@ export function activate(context: vscode.ExtensionContext) {
       socket.off('presence-update');
       socket.off('cursor-update');
       socket.off('active-file');
+      socket.off('room-closed');
+      socket.off('host-disconnected');
+      socket.off('host-reconnected');
 
       // Terima dokumen awal dari host (legacy single file)
       socket.on('init-document', (data: any) => {
@@ -635,6 +663,25 @@ export function activate(context: vscode.ExtensionContext) {
       setupDocumentSync();
       setupCursorTracking();
       setupActiveFileTracking();
+
+      // 🔒 Handle room-closed — host disconnect (setelah 30 detik)
+      socket.on('room-closed', (data: any) => {
+        handleRoomClosed(data);
+      });
+
+      // ⏳ Host sementara disconnect — tampilkan warning
+      socket.on('host-disconnected', (data: any) => {
+        vscode.window.showWarningMessage(
+          `⏳ ${data.message || 'Host terputus. Menunggu reconnect...'}`,
+        );
+      });
+
+      // ✅ Host kembali online
+      socket.on('host-reconnected', (data: any) => {
+        vscode.window.showInformationMessage(
+          `✅ Host (${data.username}) telah kembali online!`
+        );
+      });
     })
   );
 
@@ -674,6 +721,14 @@ export function activate(context: vscode.ExtensionContext) {
       if (docSyncDisposable) {
         docSyncDisposable.dispose();
         docSyncDisposable = null;
+      }
+      if (fileCreateWatcherDisposable) {
+        fileCreateWatcherDisposable.dispose();
+        fileCreateWatcherDisposable = null;
+      }
+      if (fileSaveWatcherDisposable) {
+        fileSaveWatcherDisposable.dispose();
+        fileSaveWatcherDisposable = null;
       }
       if (typingTimeout) {
         clearTimeout(typingTimeout);
@@ -818,7 +873,18 @@ export function activate(context: vscode.ExtensionContext) {
 // ─────────────────────────────────────────
 
 function connectSocket(serverUrl: string) {
-  // Putuskan socket lama kalau ada
+  // ✅ Reuse socket kalau sudah terkoneksi ke server yang sama
+  if (socket && currentServerUrl === serverUrl) {
+    if (socket.connected) {
+      console.log('♻️ Reuse existing socket connection');
+      return;
+    }
+    // Socket ada tapi tidak connected — disconnect dulu, buat baru
+    socket.disconnect();
+    socket = null;
+  }
+
+  // Putuskan socket lama kalau ada (berbeda server)
   if (socket) {
     socket.disconnect();
     socket = null;
@@ -826,7 +892,7 @@ function connectSocket(serverUrl: string) {
 
   socket = io(serverUrl, {
     reconnection: true,
-    reconnectionAttempts: 10,
+    reconnectionAttempts: Infinity, // ✅ Jangan pernah menyerah reconnect
     reconnectionDelay: 1000,
     reconnectionDelayMax: 5000,
     timeout: 20000,
@@ -835,6 +901,14 @@ function connectSocket(serverUrl: string) {
     extraHeaders: {
       'ngrok-skip-browser-warning': 'true',
     },
+  });
+
+  // ✅ Log disconnect untuk debugging
+  socket.on('disconnect', (reason: string) => {
+    console.log(`⚠️ Socket disconnected: ${reason}`);
+    vscode.window.showWarningMessage(
+      `⚠️ Koneksi terputus: ${reason}. Auto-reconnecting...`
+    );
   });
 
   socket.on('reconnect', (attempt: number) => {
@@ -852,15 +926,19 @@ function connectSocket(serverUrl: string) {
   });
 
   socket.on('reconnect_attempt', (attempt: number) => {
-    vscode.window.showWarningMessage(
-      `⚠️ Reconnecting... (${attempt}/10)`
-    );
+    if (attempt % 5 === 1) { // Hanya tampilkan setiap 5 percobaan
+      vscode.window.showWarningMessage(
+        `⚠️ Reconnecting... (percobaan ke-${attempt})`
+      );
+    }
   });
 
   socket.on('reconnect_failed', () => {
     vscode.window.showErrorMessage(
-      '❌ Gagal reconnect! Coba join ulang.'
+      '❌ Gagal reconnect! Session akan dihentikan.'
     );
+    // Bersihkan state saat gagal reconnect
+    handleRoomClosed({ reason: 'Koneksi ke server terputus dan gagal reconnect.' });
   });
 }
 
@@ -872,7 +950,14 @@ function setupDocumentSync() {
   if (docSyncDisposable) {
     docSyncDisposable.dispose();
   }
+  if (fileCreateWatcherDisposable) {
+    fileCreateWatcherDisposable.dispose();
+  }
+  if (fileSaveWatcherDisposable) {
+    fileSaveWatcherDisposable.dispose();
+  }
 
+  // 1️⃣ Sync perubahan teks real-time
   docSyncDisposable = vscode.workspace.onDidChangeTextDocument((event) => {
     // Skip kalau perubahan dari remote (hindari loop)
     if (isApplyingRemoteChange) return;
@@ -913,6 +998,75 @@ function setupDocumentSync() {
     typingTimeout = setTimeout(() => {
       emitPresence('idle');
     }, 3000);
+  });
+
+  // 2️⃣ Sync file baru yang dibuat oleh user
+  fileCreateWatcherDisposable = vscode.workspace.onDidCreateFiles(async (event) => {
+    if (isApplyingRemoteChange) return;
+    if (!socket || !socket.connected) return;
+
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) return;
+
+    for (const fileUri of event.files) {
+      if (fileUri.scheme !== 'file') continue;
+
+      const relativePath = vscode.workspace.asRelativePath(fileUri);
+
+      // Skip file di folder yang dikecualikan
+      if (relativePath.includes('node_modules/') ||
+          relativePath.includes('.git/') ||
+          relativePath.includes('out/') ||
+          relativePath.includes('dist/') ||
+          relativePath.includes('.vscode/')) {
+        continue;
+      }
+
+      try {
+        const rawBytes = await vscode.workspace.fs.readFile(fileUri);
+        const content = Buffer.from(rawBytes).toString('utf-8');
+
+        // Kirim file baru ke server — server akan simpan dan relay ke user lain
+        socket.emit('sync-document', {
+          relativePath,
+          content,
+          userId: myUserId,
+          username: myUsername,
+        });
+
+        console.log(`🆕 File baru dibuat dan di-sync: ${relativePath}`);
+      } catch (err) {
+        console.error(`❌ Gagal baca file baru ${relativePath}:`, err);
+      }
+    }
+  });
+
+  // 3️⃣ Sync file saat disimpan (backup untuk file baru yang kontennya belum tersync)
+  fileSaveWatcherDisposable = vscode.workspace.onDidSaveTextDocument((document) => {
+    if (isApplyingRemoteChange) return;
+    if (!socket || !socket.connected) return;
+    if (document.uri.scheme !== 'file') return;
+
+    const relativePath = vscode.workspace.asRelativePath(document.uri);
+
+    // Skip file di folder yang dikecualikan
+    if (relativePath.includes('node_modules/') ||
+        relativePath.includes('.git/') ||
+        relativePath.includes('out/') ||
+        relativePath.includes('dist/') ||
+        relativePath.includes('.vscode/')) {
+      return;
+    }
+
+    // Kirim full content saat save
+    socket.emit('sync-document', {
+      relativePath,
+      content: document.getText(),
+      userId: myUserId,
+      username: myUsername,
+    });
+
+    console.log(`💾 File disimpan dan di-sync: ${relativePath}`);
   });
 }
 
@@ -1619,6 +1773,68 @@ async function openAndScrollToUser(activity: UserActivity) {
   }
 }
 
+// ─────────────────────────────────────────
+// ROOM CLOSED HANDLER
+// ─────────────────────────────────────────
+
+// Dipanggil saat host disconnect → semua guest harus keluar
+function handleRoomClosed(data: { reason?: string; hostUsername?: string }) {
+  const reason = data.reason || 'Room telah ditutup oleh host.';
+
+  // Tampilkan pesan peringatan yang jelas
+  vscode.window.showErrorMessage(
+    `🔒 SESSION DITUTUP: ${reason}`,
+    'OK'
+  );
+
+  // Disconnect socket
+  if (socket) {
+    socket.disconnect();
+    socket = null;
+  }
+
+  // Bersihkan semua state
+  if (docSyncDisposable) {
+    docSyncDisposable.dispose();
+    docSyncDisposable = null;
+  }
+  if (fileCreateWatcherDisposable) {
+    fileCreateWatcherDisposable.dispose();
+    fileCreateWatcherDisposable = null;
+  }
+  if (fileSaveWatcherDisposable) {
+    fileSaveWatcherDisposable.dispose();
+    fileSaveWatcherDisposable = null;
+  }
+  if (typingTimeout) {
+    clearTimeout(typingTimeout);
+    typingTimeout = null;
+  }
+
+  clearAllRemoteCursors();
+
+  if (cursorSelectionDisposable) {
+    cursorSelectionDisposable.dispose();
+    cursorSelectionDisposable = null;
+  }
+  if (cursorEditorChangeDisposable) {
+    cursorEditorChangeDisposable.dispose();
+    cursorEditorChangeDisposable = null;
+  }
+  if (activeEditorDisposable) {
+    activeEditorDisposable.dispose();
+    activeEditorDisposable = null;
+  }
+
+  currentRoomId = '';
+  roomMembers.clear();
+  userActivities.clear();
+  activityProvider?.refresh();
+  updateStatusBar();
+
+  console.log(`🔒 Room closed: ${reason}`);
+}
+
 export function deactivate() {
   if (typingTimeout) clearTimeout(typingTimeout);
   roomMembers.clear();
@@ -1627,6 +1843,8 @@ export function deactivate() {
   if (cursorSelectionDisposable) cursorSelectionDisposable.dispose();
   if (cursorEditorChangeDisposable) cursorEditorChangeDisposable.dispose();
   if (activeEditorDisposable) activeEditorDisposable.dispose();
+  if (fileCreateWatcherDisposable) fileCreateWatcherDisposable.dispose();
+  if (fileSaveWatcherDisposable) fileSaveWatcherDisposable.dispose();
   statusBarItem?.hide();
   socket?.disconnect();
   docSyncDisposable?.dispose();
