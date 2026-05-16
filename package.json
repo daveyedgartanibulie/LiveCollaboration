@@ -12,32 +12,40 @@
   ],
   "main": "./out/extension.js",
   "contributes": {
-  "commands": [
-    {
-      "command": "collab.setUser",
-      "title": "Set User ID & Name"
-    },
-    {
-      "command": "collab.myProfile",
-      "title": "My Collab Profile"
-    },
-    {
-      "command": "collab.resetUser",
-      "title": "Reset User ID"
-    },
-    {
-      "command": "collab.startSession",
-      "title": "Start Collab Session"
-    },
-    {
-      "command": "collab.joinSession",
-      "title": "Join Collab Session"
-    },
-    {
-      "command": "collab.stopSession",
-      "title": "Stop Collab Session"
-    }
-  ]
+    "commands": [
+      {
+        "command": "collab.setUser",
+        "title": "Set User ID & Name"
+      },
+      {
+        "command": "collab.myProfile",
+        "title": "My Collab Profile"
+      },
+      {
+        "command": "collab.resetUser",
+        "title": "Reset User ID"
+      },
+      {
+        "command": "collab.startSession",
+        "title": "Start Collab Session"
+      },
+      {
+        "command": "collab.joinSession",
+        "title": "Join Collab Session"
+      },
+      {
+        "command": "collab.stopSession",
+        "title": "Stop Collab Session"
+      },
+      {
+        "command": "collab.syncFile",
+        "title": "Sync Current File to Collaborators"
+      },
+      {
+        "command": "collab.syncProject",
+        "title": "Sync Project to Collaborators"
+      }
+    ]
   },
   "activationEvents": [
     "onCommand:collab.setUser",
@@ -45,7 +53,9 @@
     "onCommand:collab.resetUser",
     "onCommand:collab.startSession",
     "onCommand:collab.joinSession",
-    "onCommand:collab.stopSession"
+    "onCommand:collab.stopSession",
+    "onCommand:collab.syncFile",
+    "onCommand:collab.syncProject"
   ],
   "scripts": {
     "vscode:prepublish": "npm run compile",

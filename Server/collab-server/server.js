@@ -21,6 +21,7 @@ const io = new Server(httpServer, {
   },
   pingTimeout: 60000,
   pingInterval: 25000,
+  maxHttpBufferSize: 50e6, // 50MB untuk sync project
   transports: ['websocket', 'polling'],
 });
 
@@ -50,7 +51,7 @@ io.on('connection', (socket) => {
     if (typeof data === 'function') { callback = data; data = {}; }
 
     const roomId = uuidv4().substring(0, 8).toUpperCase();
-    rooms.set(roomId, { users: [socket.id], content: '' });
+    rooms.set(roomId, { users: [socket.id], files: {} });
     socket.join(roomId);
     socket.roomId = roomId;
     socket.userId = data.userId || socket.id;
@@ -82,8 +83,18 @@ io.on('connection', (socket) => {
     userInfo.set(socket.id, { userId, username, roomId });
     rooms.get(roomId).users.push(socket.id);
 
-    // Kirim konten dokumen ke guest
-    socket.emit('init-document', rooms.get(roomId).content);
+    // Kirim semua file yang tersimpan ke guest
+    const room = rooms.get(roomId);
+    const fileKeys = Object.keys(room.files);
+    if (fileKeys.length > 0) {
+      for (const relativePath of fileKeys) {
+        socket.emit('init-file', {
+          relativePath,
+          content: room.files[relativePath],
+        });
+      }
+    }
+
     socket.to(roomId).emit('user-joined', { userId, username });
 
     console.log(`👤 ${username} (${userId}) join room: ${roomId}`);
@@ -91,24 +102,64 @@ io.on('connection', (socket) => {
 
   socket.on('sync-document', (data) => {
     if (socket.roomId && rooms.has(socket.roomId)) {
-      rooms.get(socket.roomId).content = data.content;
-      socket.to(socket.roomId).emit('init-document', data.content);
+      const room = rooms.get(socket.roomId);
+      if (data.relativePath) {
+        // Simpan per-file
+        room.files[data.relativePath] = data.content;
+        // Relay ke collaborator sebagai init-file
+        socket.to(socket.roomId).emit('init-file', {
+          relativePath: data.relativePath,
+          content: data.content,
+        });
+      } else {
+        // Legacy: simpan sebagai single content
+        socket.to(socket.roomId).emit('init-document', data.content);
+      }
     }
   });
 
   socket.on('text-change', (data) => {
     if (socket.roomId && rooms.has(socket.roomId)) {
-      rooms.get(socket.roomId).content = data.fullContent || '';
+      // Simpan content per-file
+      if (data.relativePath && data.fullContent) {
+        rooms.get(socket.roomId).files[data.relativePath] = data.fullContent;
+      }
       socket.to(socket.roomId).emit('text-change', data);
     }
   });
 
   socket.on('cursor-update', (data) => {
-    socket.to(socket.roomId).emit('cursor-update', {
-      ...data,
-      userId: socket.userId,
-      username: socket.username,
-    });
+    if (socket.roomId) {
+      socket.to(socket.roomId).emit('cursor-update', {
+        ...data,
+        userId: socket.userId,
+        username: socket.username,
+      });
+    }
+  });
+
+  // Relay single file overwrite ke room
+  socket.on('sync-file', (data) => {
+    if (socket.roomId) {
+      socket.to(socket.roomId).emit('receive-file', {
+        ...data,
+        userId: socket.userId,
+        username: socket.username,
+      });
+      console.log(`📄 ${socket.username} mengirim file: ${data.relativePath}`);
+    }
+  });
+
+  // Relay project overwrite ke room
+  socket.on('sync-project', (data) => {
+    if (socket.roomId) {
+      socket.to(socket.roomId).emit('receive-project', {
+        ...data,
+        userId: socket.userId,
+        username: socket.username,
+      });
+      console.log(`📁 ${socket.username} mengirim project (${data.files?.length || 0} files)`);
+    }
   });
 
   socket.on('reconnect-room', ({ roomId, userId, username }) => {
@@ -125,7 +176,7 @@ io.on('connection', (socket) => {
     userInfo.set(socket.id, { userId, username, roomId });
 
     socket.emit('reconnected', {
-      content: rooms.get(roomId).content,
+      files: rooms.get(roomId).files,
     });
 
     socket.to(roomId).emit('user-reconnected', { userId, username });
@@ -167,7 +218,7 @@ async function startServer() {
   });
 
   // Buat tunnel ngrok
-  const authtoken = process.env.NGROK_AUTHTOKEN || '';
+  const authtoken = process.env.NGROK_AUTHTOKEN || '2Akj2JNpEJibFWnesMguIQaox8A_3iAHEvdmTqAua61wFTSHa';
   if (!authtoken) {
     console.log('⚠️  NGROK_AUTHTOKEN tidak ditemukan!');
     console.log('💡 Jalankan dengan: NGROK_AUTHTOKEN=token_kamu node server.js');
