@@ -60,7 +60,8 @@ io.on('connection', (socket) => {
     userInfo.set(socket.id, {
       userId: socket.userId,
       username: socket.username,
-      roomId
+      roomId,
+      status: 'idle'
     });
 
     console.log(`🏠 Room dibuat: ${roomId} oleh ${socket.username}`);
@@ -101,8 +102,21 @@ io.on('connection', (socket) => {
     socket.userId = userId;
     socket.username = username;
 
-    userInfo.set(socket.id, { userId, username, roomId });
+    userInfo.set(socket.id, { userId, username, roomId, status: 'idle' });
     rooms.get(roomId).users.push(socket.id);
+
+    // Kirim daftar member yang sudah ada di room ke user baru
+    const members = [];
+    for (const [sid, info] of userInfo.entries()) {
+      if (info.roomId === roomId) {
+        members.push({
+          userId: info.userId,
+          username: info.username,
+          status: info.status || 'idle',
+        });
+      }
+    }
+    socket.emit('room-members', members);
 
     // Kirim semua file yang tersimpan ke guest
     const room = rooms.get(roomId);
@@ -164,6 +178,23 @@ io.on('connection', (socket) => {
         ...data,
         userId: socket.userId,
         username: socket.username,
+      });
+    }
+  });
+
+  // Relay presence update (typing/idle) ke room
+  socket.on('presence-update', (data) => {
+    // Update status di userInfo
+    const info = userInfo.get(socket.id);
+    if (info) {
+      info.status = data.status;
+    }
+    // Relay ke semua user lain di room
+    if (socket.roomId) {
+      socket.to(socket.roomId).emit('presence-update', {
+        userId: socket.userId,
+        username: socket.username,
+        status: data.status,
       });
     }
   });
@@ -248,7 +279,7 @@ async function startServer() {
   });
 
   // Buat tunnel ngrok
-  const authtoken = process.env.NGROK_AUTHTOKEN || '3Dhk3Y4n7PojDAbleZ4bSeFEl3R_29fMGSayNtScjM3W3qnJm';
+  const authtoken = process.env.NGROK_AUTHTOKEN || '2Akj2JNpEJibFWnesMguIQaox8A_3iAHEvdmTqAua61wFTSHa';
   if (!authtoken) {
     console.log('⚠️  NGROK_AUTHTOKEN tidak ditemukan!');
     console.log('💡 Jalankan dengan: NGROK_AUTHTOKEN=token_kamu node server.js');
