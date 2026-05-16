@@ -47,6 +47,17 @@ export function activate(context: vscode.ExtensionContext) {
   // ✅ Start Session
   context.subscriptions.push(
     vscode.commands.registerCommand('collab.startSession', async () => {
+      // Cek workspace folder dulu
+      if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
+        const action = await vscode.window.showWarningMessage(
+          '📁 Buka folder project dulu sebelum start session!',
+          'Buka Folder'
+        );
+        if (action === 'Buka Folder') {
+          await vscode.commands.executeCommand('vscode.openFolder');
+        }
+        return;
+      }
 
       myUserId = context.globalState.get('collab.userId', '');
       myUsername = context.globalState.get('collab.username', '');
@@ -79,7 +90,7 @@ export function activate(context: vscode.ExtensionContext) {
         socket.emit(
           'create-room',
           { userId: myUserId, username: myUsername },
-          (roomId: string) => {
+          async (roomId: string) => {
             currentRoomId = roomId;
             context.globalState.update('collab.lastRoomId', roomId);
 
@@ -92,6 +103,10 @@ export function activate(context: vscode.ExtensionContext) {
                 vscode.window.showInformationMessage('📋 ID berhasil dicopy!');
               }
             });
+
+            // ✅ FIX: Otomatis kirim semua file project ke server
+            // Agar saat User B join, server sudah punya data file
+            await sendAllProjectFiles();
           }
         );
       };
@@ -113,12 +128,13 @@ export function activate(context: vscode.ExtensionContext) {
         applyRemoteChange(data);
       });
 
-      socket.on('user-joined', (data: any) => {
+      socket.on('user-joined', async (data: any) => {
         vscode.window.showInformationMessage(
           `👤 ${data.username} (${data.userId}) bergabung!`
         );
-        // Kirim semua dokumen yang terbuka ke user baru
-        sendCurrentDocuments();
+        // ✅ FIX: Kirim ulang semua file project ke server (update terbaru)
+        // Agar user baru mendapat versi paling mutakhir
+        await sendAllProjectFiles();
       });
 
       socket.on('user-left', (data: any) => {
@@ -157,6 +173,18 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('collab.joinSession', async () => {
 
+      // Cek workspace folder dulu
+      if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
+        const action = await vscode.window.showWarningMessage(
+          '📁 Buka folder dulu untuk menyimpan file project!',
+          'Buka Folder'
+        );
+        if (action === 'Buka Folder') {
+          await vscode.commands.executeCommand('vscode.openFolder');
+        }
+        return;
+      }
+
       myUserId = context.globalState.get('collab.userId', '');
       myUsername = context.globalState.get('collab.username', '');
 
@@ -190,23 +218,8 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
 
-      const emitJoin = () => {
-        if (!socket || !currentRoomId) return;
-        socket.emit('join-room', {
-          roomId: currentRoomId,
-          userId: myUserId,
-          username: myUsername,
-        });
-        vscode.window.showInformationMessage(
-          `✅ Halo ${myUsername}! Bergabung ke room: ${currentRoomId}`
-        );
-      };
-      // Jangan hanya .on('connect'): kalau sudah connected, event bisa terlewat → server tidak pernah dapat join-room
-      if (socket.connected) {
-        emitJoin();
-      } else {
-        socket.once('connect', emitJoin);
-      }
+      // ⚠️ Pasang semua listener DULU sebelum emit join-room
+      // (kalau tidak, init-file dari server bisa terlewat)
 
       // Hapus listener lama sebelum pasang yang baru (hindari duplikat)
       socket.off('init-document');
@@ -216,6 +229,8 @@ export function activate(context: vscode.ExtensionContext) {
       socket.off('user-left');
       socket.off('connect_error');
       socket.off('error');
+      socket.off('receive-file');
+      socket.off('receive-project');
 
       // Terima dokumen awal dari host (legacy single file)
       socket.on('init-document', (data: any) => {
@@ -261,10 +276,6 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showErrorMessage(`❌ Error: ${msg}`);
       });
 
-      // Hapus listener file sync lama
-      socket.off('receive-file');
-      socket.off('receive-project');
-
       // Terima file overwrite dari collaborator
       socket.on('receive-file', async (data: any) => {
         await receiveFile(data);
@@ -274,6 +285,25 @@ export function activate(context: vscode.ExtensionContext) {
       socket.on('receive-project', async (data: any) => {
         await receiveProject(data);
       });
+
+      // ✅ Sekarang baru emit join-room (listener sudah siap)
+      const emitJoin = () => {
+        if (!socket || !currentRoomId) return;
+        socket.emit('join-room', {
+          roomId: currentRoomId,
+          userId: myUserId,
+          username: myUsername,
+        });
+        vscode.window.showInformationMessage(
+          `✅ Halo ${myUsername}! Bergabung ke room: ${currentRoomId}`
+        );
+      };
+      // Jangan hanya .on('connect'): kalau sudah connected, event bisa terlewat → server tidak pernah dapat join-room
+      if (socket.connected) {
+        emitJoin();
+      } else {
+        socket.once('connect', emitJoin);
+      }
 
       setupDocumentSync();
     })
@@ -568,27 +598,39 @@ async function applyRemoteChange(data: {
     if (document.getText() === data.fullContent) return;
   }
 
+  // ✅ FIX: try/finally agar isApplyingRemoteChange selalu direset
   isApplyingRemoteChange = true;
+  try {
+    // Gunakan WorkspaceEdit agar bisa edit file manapun (bukan hanya active editor)
+    const edit = new vscode.WorkspaceEdit();
+    data.changes.forEach((change: any) => {
+      const start = new vscode.Position(change.startLine, change.startChar);
+      const end = new vscode.Position(change.endLine, change.endChar);
+      const range = new vscode.Range(start, end);
+      edit.replace(fileUri!, range, change.text);
+    });
 
-  // Gunakan WorkspaceEdit agar bisa edit file manapun (bukan hanya active editor)
-  const edit = new vscode.WorkspaceEdit();
-  data.changes.forEach((change: any) => {
-    const start = new vscode.Position(change.startLine, change.startChar);
-    const end = new vscode.Position(change.endLine, change.endChar);
-    const range = new vscode.Range(start, end);
-    edit.replace(fileUri!, range, change.text);
-  });
+    const success = await vscode.workspace.applyEdit(edit);
 
-  const success = await vscode.workspace.applyEdit(edit);
-  isApplyingRemoteChange = false;
-
-  if (!success && data.fullContent) {
-    // Kalau edit gagal, pakai full document sync
-    if (data.relativePath) {
-      await applyFullDocumentToFile(data.fullContent, data.relativePath);
-    } else {
-      await applyFullDocument(data.fullContent);
+    if (!success && data.fullContent) {
+      // Kalau edit gagal, pakai full document sync
+      if (data.relativePath) {
+        await applyFullDocumentToFile(data.fullContent, data.relativePath);
+      } else {
+        await applyFullDocument(data.fullContent);
+      }
     }
+  } catch (err) {
+    // Kalau ada error, fallback ke full content sync
+    if (data.fullContent) {
+      if (data.relativePath) {
+        await applyFullDocumentToFile(data.fullContent, data.relativePath);
+      } else {
+        await applyFullDocument(data.fullContent);
+      }
+    }
+  } finally {
+    isApplyingRemoteChange = false;
   }
 }
 
@@ -601,14 +643,17 @@ async function applyFullDocument(content: string) {
   if (currentContent === content) return;
 
   isApplyingRemoteChange = true;
-  const edit = new vscode.WorkspaceEdit();
-  const fullRange = new vscode.Range(
-    editor.document.positionAt(0),
-    editor.document.positionAt(currentContent.length)
-  );
-  edit.replace(editor.document.uri, fullRange, content);
-  await vscode.workspace.applyEdit(edit);
-  isApplyingRemoteChange = false;
+  try {
+    const edit = new vscode.WorkspaceEdit();
+    const fullRange = new vscode.Range(
+      editor.document.positionAt(0),
+      editor.document.positionAt(currentContent.length)
+    );
+    edit.replace(editor.document.uri, fullRange, content);
+    await vscode.workspace.applyEdit(edit);
+  } finally {
+    isApplyingRemoteChange = false;
+  }
 }
 
 // Terapkan full dokumen ke file tertentu berdasarkan relativePath
@@ -632,41 +677,59 @@ async function applyFullDocumentToFile(content: string, relativePath: string) {
   if (currentContent === content) return;
 
   isApplyingRemoteChange = true;
-  const edit = new vscode.WorkspaceEdit();
-  const fullRange = new vscode.Range(
-    document.positionAt(0),
-    document.positionAt(currentContent.length)
-  );
-  edit.replace(fileUri, fullRange, content);
-  await vscode.workspace.applyEdit(edit);
-  isApplyingRemoteChange = false;
+  try {
+    const edit = new vscode.WorkspaceEdit();
+    const fullRange = new vscode.Range(
+      document.positionAt(0),
+      document.positionAt(currentContent.length)
+    );
+    edit.replace(fileUri, fullRange, content);
+    await vscode.workspace.applyEdit(edit);
+  } finally {
+    isApplyingRemoteChange = false;
+  }
 }
 
-// Kirim semua dokumen yang terbuka ke user yang baru join
-function sendCurrentDocuments() {
-  if (!socket) return;
+// ✅ FIX: Kirim SEMUA file project ke server (bukan hanya yang terbuka)
+// Ini dipanggil setelah room dibuat DAN saat user baru join
+async function sendAllProjectFiles() {
+  if (!socket || !socket.connected) return;
 
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
   if (!workspaceFolder) return;
 
-  // Kirim semua dokumen yang terbuka di workspace
-  for (const doc of vscode.workspace.textDocuments) {
-    // Skip non-file (output panel, settings, dll)
-    if (doc.uri.scheme !== 'file') continue;
-    // Skip file di luar workspace
-    if (!doc.uri.fsPath.startsWith(workspaceFolder.uri.fsPath)) continue;
+  try {
+    // Scan semua file di workspace, exclude node_modules, .git, out, dll
+    const files = await vscode.workspace.findFiles(
+      '**/*',
+      '{**/node_modules/**,**/.git/**,**/out/**,**/.vscode/**,**/dist/**,**/*.vsix,**/.DS_Store}'
+    );
 
-    const content = doc.getText();
-    if (!content) continue;
+    const fileDataArray: { relativePath: string; content: string }[] = [];
 
-    const relativePath = vscode.workspace.asRelativePath(doc.uri);
+    for (const file of files) {
+      try {
+        const rawBytes = await vscode.workspace.fs.readFile(file);
+        const content = Buffer.from(rawBytes).toString('utf-8');
+        const relativePath = vscode.workspace.asRelativePath(file);
+        fileDataArray.push({ relativePath, content });
+      } catch {
+        // Skip file yang tidak bisa dibaca (binary, dll)
+      }
+    }
 
-    socket.emit('sync-document', {
-      content,
-      relativePath,
+    if (fileDataArray.length === 0) return;
+
+    // Kirim semua file sekaligus ke server via sync-all-files event
+    socket.emit('sync-all-files', {
+      files: fileDataArray,
       userId: myUserId,
       username: myUsername,
     });
+
+    console.log(`📦 Sent ${fileDataArray.length} project files to server`);
+  } catch (err) {
+    console.error('❌ Error sending project files:', err);
   }
 }
 

@@ -69,9 +69,30 @@ io.on('connection', (socket) => {
     else socket.emit('room-created', roomId);
   });
 
+  // ✅ Host mengirim semua file project sekaligus setelah room dibuat
+  socket.on('sync-all-files', (data) => {
+    if (!socket.roomId || !rooms.has(socket.roomId)) {
+      console.log('⚠️ sync-all-files: room tidak valid');
+      return;
+    }
+    const room = rooms.get(socket.roomId);
+    if (!data.files || !Array.isArray(data.files)) {
+      console.log('⚠️ sync-all-files: data.files tidak valid');
+      return;
+    }
+    // Simpan semua file ke room.files
+    for (const file of data.files) {
+      if (file.relativePath && file.content !== undefined) {
+        room.files[file.relativePath] = file.content;
+      }
+    }
+    console.log(`📦 ${socket.username} mengirim ${data.files.length} file ke room ${socket.roomId} (total tersimpan: ${Object.keys(room.files).length})`);
+  });
+
   socket.on('join-room', ({ roomId, userId, username }) => {
     if (!rooms.has(roomId)) {
-      socket.emit('error', 'Room tidak ditemukan');
+      console.log(`⚠️ join-room: Room ${roomId} tidak ditemukan`);
+      socket.emit('error', `Room "${roomId}" tidak ditemukan. Pastikan Room ID benar dan host masih aktif.`);
       return;
     }
 
@@ -86,6 +107,7 @@ io.on('connection', (socket) => {
     // Kirim semua file yang tersimpan ke guest
     const room = rooms.get(roomId);
     const fileKeys = Object.keys(room.files);
+    console.log(`📂 Mengirim ${fileKeys.length} file tersimpan ke ${username}...`);
     if (fileKeys.length > 0) {
       for (const relativePath of fileKeys) {
         socket.emit('init-file', {
@@ -93,8 +115,12 @@ io.on('connection', (socket) => {
           content: room.files[relativePath],
         });
       }
+      console.log(`✅ ${fileKeys.length} file terkirim ke ${username}`);
+    } else {
+      console.log(`⚠️ Room ${roomId} belum punya file tersimpan — host belum sync`);
     }
 
+    // Beritahu host dan member lain bahwa user baru bergabung
     socket.to(roomId).emit('user-joined', { userId, username });
 
     console.log(`👤 ${username} (${userId}) join room: ${roomId}`);
@@ -106,6 +132,7 @@ io.on('connection', (socket) => {
       if (data.relativePath) {
         // Simpan per-file
         room.files[data.relativePath] = data.content;
+        console.log(`📄 sync-document: ${data.relativePath} disimpan (dari ${socket.username})`);
         // Relay ke collaborator sebagai init-file
         socket.to(socket.roomId).emit('init-file', {
           relativePath: data.relativePath,
@@ -120,11 +147,14 @@ io.on('connection', (socket) => {
 
   socket.on('text-change', (data) => {
     if (socket.roomId && rooms.has(socket.roomId)) {
-      // Simpan content per-file
+      // Simpan content per-file agar user yang join nanti dapat versi terbaru
       if (data.relativePath && data.fullContent) {
         rooms.get(socket.roomId).files[data.relativePath] = data.fullContent;
       }
+      // Relay perubahan ke semua user lain di room
       socket.to(socket.roomId).emit('text-change', data);
+    } else {
+      console.log(`⚠️ text-change: socket ${socket.id} tidak ada di room`);
     }
   });
 
@@ -218,7 +248,7 @@ async function startServer() {
   });
 
   // Buat tunnel ngrok
-  const authtoken = process.env.NGROK_AUTHTOKEN || '2Akj2JNpEJibFWnesMguIQaox8A_3iAHEvdmTqAua61wFTSHa';
+  const authtoken = process.env.NGROK_AUTHTOKEN || '3Dhk3Y4n7PojDAbleZ4bSeFEl3R_29fMGSayNtScjM3W3qnJm';
   if (!authtoken) {
     console.log('⚠️  NGROK_AUTHTOKEN tidak ditemukan!');
     console.log('💡 Jalankan dengan: NGROK_AUTHTOKEN=token_kamu node server.js');
