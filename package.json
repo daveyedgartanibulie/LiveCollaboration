@@ -31,10 +31,16 @@
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "collabUsers",
+        "contents": "Belum ada session aktif.\n[Start Session](command:collab.startSession)\nAtau klik Invite Link dari host untuk join.\n[Set Username](command:collab.setUsername)"
+      }
+    ],
     "commands": [
       {
-        "command": "collab.setUser",
-        "title": "Set User ID & Name"
+        "command": "collab.setUsername",
+        "title": "Set Username"
       },
       {
         "command": "collab.myProfile",
@@ -42,15 +48,15 @@
       },
       {
         "command": "collab.resetUser",
-        "title": "Reset User ID"
+        "title": "Reset User Data"
       },
       {
         "command": "collab.startSession",
         "title": "Start Collab Session"
       },
       {
-        "command": "collab.joinSession",
-        "title": "Join Collab Session"
+        "command": "collab.joinViaLink",
+        "title": "Join Session via Link"
       },
       {
         "command": "collab.stopSession",
@@ -74,9 +80,42 @@
         "icon": "$(eye)"
       },
       {
+        "command": "collab.unfollowUser",
+        "title": "Unfollow User",
+        "icon": "$(eye-closed)"
+      },
+      {
         "command": "collab.openUserFile",
         "title": "Open User's File",
         "icon": "$(go-to-file)"
+      },
+      {
+        "command": "collab.shareTerminal",
+        "title": "Share Terminal to Collaborators"
+      },
+      {
+        "command": "collab.stopShareTerminal",
+        "title": "Stop Sharing Terminal"
+      },
+      {
+        "command": "collab.pinLocation",
+        "title": "Pin Current Location",
+        "icon": "$(pin)"
+      },
+      {
+        "command": "collab.goToPin",
+        "title": "Go to Last Pin",
+        "icon": "$(pinned)"
+      },
+      {
+        "command": "collab.copyInviteLink",
+        "title": "Copy Invite Link",
+        "icon": "$(link)"
+      },
+      {
+        "command": "collab.goToUser",
+        "title": "Go to User",
+        "icon": "$(location)"
       }
     ],
     "menus": {
@@ -87,29 +126,52 @@
           "group": "inline"
         },
         {
+          "command": "collab.unfollowUser",
+          "when": "view == collabUsers && viewItem == followedUser",
+          "group": "inline"
+        },
+        {
           "command": "collab.openUserFile",
           "when": "view == collabUsers && viewItem == userFile",
+          "group": "inline"
+        },
+        {
+          "command": "collab.goToUser",
+          "when": "view == collabUsers && viewItem == remoteUser",
+          "group": "inline"
+        },
+        {
+          "command": "collab.goToUser",
+          "when": "view == collabUsers && viewItem == followedUser",
           "group": "inline"
         }
       ]
     }
   },
   "activationEvents": [
-    "onCommand:collab.setUser",
+    "onCommand:collab.setUsername",
     "onCommand:collab.myProfile",
     "onCommand:collab.resetUser",
     "onCommand:collab.startSession",
-    "onCommand:collab.joinSession",
+    "onCommand:collab.joinViaLink",
     "onCommand:collab.stopSession",
     "onCommand:collab.syncFile",
     "onCommand:collab.syncProject",
     "onCommand:collab.showActiveUsers",
+    "onCommand:collab.shareTerminal",
+    "onCommand:collab.stopShareTerminal",
+    "onCommand:collab.pinLocation",
+    "onCommand:collab.goToPin",
+    "onCommand:collab.copyInviteLink",
+    "onCommand:collab.goToUser",
+    "onUri",
     "onView:collabUsers"
   ],
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run build",
+    "compile": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --sourcemap",
+    "build": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --minify",
+    "watch": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --sourcemap --watch",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src",
     "test": "vscode-test"
@@ -121,11 +183,13 @@
     "@types/vscode": "^1.118.0",
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.5.2",
+    "esbuild": "^0.28.0",
     "eslint": "^9.39.3",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.56.1"
   },
   "dependencies": {
+    "node-pty": "^1.1.0",
     "socket.io-client": "^4.8.3"
   }
 }

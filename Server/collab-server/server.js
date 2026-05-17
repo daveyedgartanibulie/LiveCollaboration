@@ -44,6 +44,94 @@ app.get('/', (req, res) => {
   `);
 });
 
+// ✅ Join via shareable link — redirect browser ke vscode:// URI
+app.get('/join/:roomId', (req, res) => {
+  const roomId = req.params.roomId.toUpperCase().replace(/-/g, '');
+  const serverUrl = ngrokUrl || `http://localhost:${PORT}`;
+  const vsCodeUri = `vscode://sitewhiz.live-collaboration/join?server=${encodeURIComponent(serverUrl)}&room=${encodeURIComponent(roomId)}`;
+
+  res.send(`
+    <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta http-equiv="refresh" content="2;url=${vsCodeUri}">
+        <style>
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #0d1117 100%);
+            color: #e6edf3;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+          .card {
+            background: rgba(22, 27, 34, 0.8);
+            border: 1px solid #30363d;
+            border-radius: 16px;
+            padding: 48px;
+            text-align: center;
+            max-width: 480px;
+            backdrop-filter: blur(20px);
+            box-shadow: 0 16px 48px rgba(0,0,0,0.4);
+          }
+          .icon { font-size: 64px; margin-bottom: 16px; }
+          h1 { font-size: 24px; margin-bottom: 8px; color: #58a6ff; }
+          p { color: #8b949e; margin-bottom: 24px; line-height: 1.6; }
+          .room-id {
+            display: inline-block;
+            background: #21262d;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 8px 20px;
+            font-family: 'Cascadia Code', monospace;
+            font-size: 20px;
+            color: #58a6ff;
+            letter-spacing: 3px;
+            margin-bottom: 24px;
+          }
+          .btn {
+            display: inline-block;
+            background: linear-gradient(135deg, #238636, #2ea043);
+            color: #fff;
+            text-decoration: none;
+            padding: 12px 32px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            transition: all 0.2s;
+          }
+          .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(46,160,67,0.4); }
+          .spinner {
+            display: inline-block;
+            width: 20px; height: 20px;
+            border: 2px solid #30363d;
+            border-top-color: #58a6ff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 8px;
+            vertical-align: middle;
+          }
+          @keyframes spin { to { transform: rotate(360deg); } }
+          .status { font-size: 14px; color: #8b949e; margin-top: 16px; }
+        </style>
+      </head>
+      <body>
+        <div class="card">
+          <div class="icon">🚀</div>
+          <h1>Live Collaboration</h1>
+          <p>Kamu diundang untuk bergabung ke session kolaborasi</p>
+          <div class="room-id">${roomId}</div>
+          <br><br>
+          <a class="btn" href="${vsCodeUri}">Buka di VS Code</a>
+          <div class="status"><span class="spinner"></span>Membuka VS Code secara otomatis...</div>
+        </div>
+      </body>
+    </html>
+  `);
+});
+
 io.on('connection', (socket) => {
   console.log('✅ User connected:', socket.id);
 
@@ -145,18 +233,23 @@ io.on('connection', (socket) => {
     }
     socket.emit('room-members', members);
 
-    // Kirim semua file yang tersimpan ke joiner
+    // Kirim pin terakhir ke joiner baru (jika ada)
+    if (room.lastPin) {
+      socket.emit('pin-location', room.lastPin);
+    }
+
+    // Kirim semua file yang tersimpan ke joiner dalam satu batch
     const fileKeys = Object.keys(room.files);
     console.log(`📂 Mengirim ${fileKeys.length} file tersimpan ke ${username}...`);
     if (fileKeys.length > 0) {
-      for (const relativePath of fileKeys) {
-        socket.emit('init-file', {
-          relativePath,
-          content: room.files[relativePath],
-        });
-      }
-      console.log(`✅ ${fileKeys.length} file terkirim ke ${username}`);
-    } else {
+      const projectFiles = fileKeys.map(relativePath => ({
+        relativePath,
+        content: room.files[relativePath]
+      }));
+      socket.emit('init-project', { files: projectFiles });
+    }
+    console.log(`✅ ${fileKeys.length} file terkirim ke ${username}`);
+    if (fileKeys.length === 0) {
       console.log(`⚠️ Room ${roomId} belum punya file tersimpan — host belum sync`);
     }
 
@@ -182,6 +275,36 @@ io.on('connection', (socket) => {
         // Legacy: simpan sebagai single content
         socket.to(socket.roomId).emit('init-document', data.content);
       }
+    }
+  });
+
+  socket.on('create-folder', (data) => {
+    if (socket.roomId && rooms.has(socket.roomId)) {
+      console.log(`📁 create-folder: ${data.relativePath} (dari ${socket.username})`);
+      socket.to(socket.roomId).emit('create-folder', data);
+    }
+  });
+
+  socket.on('delete-file', (data) => {
+    if (socket.roomId && rooms.has(socket.roomId)) {
+      const room = rooms.get(socket.roomId);
+      if (room.files[data.relativePath]) {
+        delete room.files[data.relativePath]; // Hapus dari cache server
+      }
+      console.log(`🗑️ delete-file: ${data.relativePath} (dari ${socket.username})`);
+      socket.to(socket.roomId).emit('delete-file', data);
+    }
+  });
+
+  socket.on('rename-file', (data) => {
+    if (socket.roomId && rooms.has(socket.roomId)) {
+      const room = rooms.get(socket.roomId);
+      if (room.files[data.oldPath]) {
+        room.files[data.newPath] = room.files[data.oldPath];
+        delete room.files[data.oldPath];
+      }
+      console.log(`✏️ rename-file: ${data.oldPath} -> ${data.newPath} (dari ${socket.username})`);
+      socket.to(socket.roomId).emit('rename-file', data);
     }
   });
 
@@ -244,6 +367,30 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ✅ Pin Location — broadcast pin ke semua user di room
+  socket.on('pin-location', (data) => {
+    if (!socket.roomId || !rooms.has(socket.roomId)) return;
+    const room = rooms.get(socket.roomId);
+
+    const pinData = {
+      userId: socket.userId,
+      username: socket.username,
+      relativePath: data.relativePath,
+      line: data.line,
+      character: data.character,
+      message: data.message || '',
+      timestamp: Date.now(),
+    };
+
+    // Simpan pin terakhir di room
+    room.lastPin = pinData;
+
+    // Broadcast ke semua user di room (termasuk pengirim)
+    io.to(socket.roomId).emit('pin-location', pinData);
+
+    console.log(`📌 ${socket.username} pin location: ${data.relativePath}:${data.line + 1} di room ${socket.roomId}`);
+  });
+
   // Relay single file overwrite ke room
   socket.on('sync-file', (data) => {
     if (socket.roomId) {
@@ -267,6 +414,142 @@ io.on('connection', (socket) => {
       console.log(`📁 ${socket.username} mengirim project (${data.files?.length || 0} files)`);
     }
   });
+
+  // ─── SHARED TERMINAL ───────────────────────────────
+
+  // Host memulai share terminal
+  socket.on('terminal-start', (data, callback) => {
+    console.log(`🖥️ [SERVER] Received terminal-start from ${socket.username}`);
+    if (!socket.roomId || !rooms.has(socket.roomId)) {
+      console.log('⚠️ terminal-start: room tidak valid');
+      if (typeof callback === 'function') callback({ ok: false, error: 'room tidak valid' });
+      return;
+    }
+    const room = rooms.get(socket.roomId);
+
+    // Hanya host yang boleh share terminal
+    if (room.hostSocketId !== socket.id) {
+      socket.emit('error', 'Hanya host yang bisa share terminal.');
+      if (typeof callback === 'function') callback({ ok: false, error: 'bukan host' });
+      return;
+    }
+
+    room.terminalSharing = true;
+    room.terminalAllowInput = data?.allowInput || false;
+
+    const guestCount = room.users.filter(id => id !== socket.id).length;
+    console.log(`🖥️ [SERVER] Broadcasting terminal-started to ${guestCount} guests in room ${socket.roomId}`);
+
+    socket.to(socket.roomId).emit('terminal-started', {
+      hostUsername: socket.username,
+      allowInput: room.terminalAllowInput,
+    });
+
+    console.log(`🖥️ ${socket.username} memulai share terminal di room ${socket.roomId}`);
+    if (typeof callback === 'function') callback({ ok: true, guestCount });
+  });
+
+  // Host mengirim output terminal
+  socket.on('terminal-data', (data) => {
+    if (!socket.roomId || !rooms.has(socket.roomId)) return;
+    const room = rooms.get(socket.roomId);
+    if (room.hostSocketId !== socket.id) return;
+
+    socket.to(socket.roomId).emit('terminal-data', {
+      data: data.data,
+    });
+  });
+
+  // Guest mengirim command request ke host (staging — host harus approve)
+  socket.on('terminal-command-request', (data) => {
+    if (!socket.roomId || !rooms.has(socket.roomId)) return;
+    const room = rooms.get(socket.roomId);
+    if (!room.terminalAllowInput) return;
+
+    // Kirim command request ke host
+    const hostSocket = io.sockets.sockets.get(room.hostSocketId);
+    if (hostSocket) {
+      hostSocket.emit('terminal-command-request', {
+        command: data.command,
+        userId: socket.userId,
+        username: socket.username,
+      });
+      console.log(`🖥️ ${socket.username} request command: "${data.command}" → waiting host approval`);
+    }
+  });
+
+  // Host menolak command dari guest
+  socket.on('terminal-command-rejected', (data) => {
+    if (!socket.roomId || !rooms.has(socket.roomId)) return;
+    const room = rooms.get(socket.roomId);
+    if (room.hostSocketId !== socket.id) return;
+
+    socket.to(socket.roomId).emit('terminal-command-rejected', {
+      command: data.command,
+      username: data.username,
+      reason: data.reason || 'rejected',
+    });
+    console.log(`🖥️ Host menolak command dari ${data.username}: "${data.command}" (${data.reason || 'rejected'})`);
+  });
+
+  // Host menyetujui command dari guest
+  socket.on('terminal-command-approved', (data) => {
+    if (!socket.roomId || !rooms.has(socket.roomId)) return;
+    const room = rooms.get(socket.roomId);
+    if (room.hostSocketId !== socket.id) return;
+
+    socket.to(socket.roomId).emit('terminal-command-approved', {
+      command: data.command,
+      username: data.username,
+    });
+    console.log(`🖥️ Host menyetujui command dari ${data.username}: "${data.command}"`);
+  });
+
+  // Guest membatalkan command request
+  socket.on('terminal-command-cancel', (data) => {
+    if (!socket.roomId || !rooms.has(socket.roomId)) return;
+    const room = rooms.get(socket.roomId);
+
+    // Kirim cancel ke host
+    const hostSocket = io.sockets.sockets.get(room.hostSocketId);
+    if (hostSocket) {
+      hostSocket.emit('terminal-command-cancel', {
+        userId: socket.userId,
+        username: socket.username,
+      });
+      console.log(`🖥️ ${socket.username} membatalkan command request`);
+    }
+  });
+
+  // Host mengirim resize terminal
+  socket.on('terminal-resize', (data) => {
+    if (!socket.roomId || !rooms.has(socket.roomId)) return;
+    const room = rooms.get(socket.roomId);
+    if (room.hostSocketId !== socket.id) return;
+
+    socket.to(socket.roomId).emit('terminal-resize', {
+      cols: data.cols,
+      rows: data.rows,
+    });
+  });
+
+  // Host menghentikan share terminal
+  socket.on('terminal-stop', () => {
+    if (!socket.roomId || !rooms.has(socket.roomId)) return;
+    const room = rooms.get(socket.roomId);
+    if (room.hostSocketId !== socket.id) return;
+
+    room.terminalSharing = false;
+    room.terminalAllowInput = false;
+
+    socket.to(socket.roomId).emit('terminal-stopped', {
+      hostUsername: socket.username,
+    });
+
+    console.log(`🖥️ ${socket.username} menghentikan share terminal di room ${socket.roomId}`);
+  });
+
+  // ─── END SHARED TERMINAL ──────────────────────────
 
   socket.on('reconnect-room', ({ roomId, userId, username }) => {
     if (!rooms.has(roomId)) {
